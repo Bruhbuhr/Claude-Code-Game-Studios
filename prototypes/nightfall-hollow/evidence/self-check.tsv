@@ -1,0 +1,60 @@
+time	2026-11-25 11:14:50
+keep	lines	0	pinned	0
+briefword	2d	shown	evidence/play.png
+briefword	terraria and recommend	shown	evidence/play.png
+briefword	Terraria	shown	evidence/play.png
+checklist	L1	unlisted	-	Look: modern 16-bit pixel *(provisional)*. Mood: a warm surface by day and a cold blue night. Scale: 16-pixel tiles at whole-number scale, with a camera that never moves in sub-pixels. Shapes: blocky world, a small rounded digger, sharp angular monsters. Palette: earth browns and moss green for the ground, cool grey stone, the player in warm orange, threats in sickly violet with bright eyes, ore as the glinting accent; shadows cooler, lights warmer. Rules: one pixel density, a dark one-pixel outline on figures only, flat shading with one highlight step. Signature: darkness that swallows the caves, with torchlight carving warm pools out of it. Every figure drawn, no emoji, no plain circles.	
+checklist	L2	unlisted	-	References: Terraria (the side-view dig, build and night loop; not its art, names or characters).	
+checklist	L3	unlisted	-	View: 2D · Camera: side view that follows the digger.	
+checklist	F1	unlisted	-	A side-view world generated from a seed each run: surface, dirt, stone, caves, ore, trees	
+checklist	F2	unlisted	-	Digging that cracks blocks in steps, with harder rock deeper and rock that says what tool it needs	
+checklist	F3	unlisted	-	Ore that glints before you reach it, and pickups that fly to you	
+checklist	F4	unlisted	-	A craft list that shows what you can make now and what greyed recipes are missing	
+checklist	F5	unlisted	-	Block placing on a grid with a ghost preview, for walls, doors and torches	
+checklist	F6	unlisted	-	A day and night cycle with felt dusk, darkness and torchlight	
+checklist	F7	unlisted	-	3 night monster kinds, each attacking differently (a walker that chews walls, a leaper, a flyer)	
+checklist	S1	unlisted	-	dig procedural caves · in the slice	
+checklist	S2	unlisted	-	craft tools · in the slice	
+checklist	S3	unlisted	-	survive monsters at night · in the slice	
+checklist	S4	unlisted	-	build a settlement that defends itself · thin stand-in *(guessed)*	
+checklist	S5	unlisted	-	descend into a fresh procedural world each run · thin stand-in *(guessed)*	
+checklist	M1	unlisted	-	You stand on grass under a low sun with a pickaxe in hand.	
+checklist	M2	unlisted	-	Holding the mouse on dirt cracks it in steps and the bits fly to you.	
+checklist	M3	unlisted	-	A tree gives wood and the crafting list lights up with a torch and wood walls, while greyed recipes say what they still need.	
+checklist	M4	unlisted	-	An ore glint a few tiles down pulls you into the first cave, where it gets dark until you place a torch.	
+checklist	M5	unlisted	-	Then the sky starts to turn.	
+checklist	M6	unlisted	-	You climb out and wall yourself in as the first monster reaches the door.	
+checklist	M7	unlisted	-	*(guessed)*	
+checklist	C1	unlisted	-	The first night comes about two minutes in.	
+checklist	C2	unlisted	-	A basic walled shelter with a torch survives it.	
+checklist	C3	unlisted	-	Monsters walk at you and chew through weak walls, so dirt holds briefly and stone holds longer.	
+checklist	C4	unlisted	-	Dying drops what you carried where you fell and you wake at your bed.	
+checklist	C5	unlisted	-	Each night brings more monsters and a new kind.	
+checklist	C6	unlisted	-	*(provisional)*	
+browser	HeadlessChrome/158.0.0.0
+scene	play	0	title
+scene	play	1	play
+digits	log	bold 10px "Courier New", monospace	tabular	0
+digits	log	bold 8px "Courier New", monospace	tabular	0
+measure	step-time	play	0.020	3.200	293
+lane	play	stop	4.9	132
+uncaught	play	0
+text	play	canvas	516,20,574,37	24.0	11.59	inside	Day 1
+text	play	canvas	1111,22,1264,35	19.2	8.01	inside	E craft  P pause
+text	play	canvas	437,64,843,77	24.0	10.39	inside	Press E to craft torches and walls
+text	play	canvas	437,652,444,662	19.2	9.85	inside	1
+text	play	canvas	497,652,504,662	19.2	9.85	inside	2
+text	play	canvas	557,652,565,662	19.2	9.85	inside	3
+text	play	canvas	594,692,601,702	19.2	19.72	inside	0
+text	play	canvas	617,652,624,662	19.2	9.85	inside	4
+text	play	canvas	654,692,661,702	19.2	19.72	inside	0
+text	play	canvas	677,652,685,662	19.2	9.85	inside	5
+text	play	canvas	714,692,721,702	19.2	19.72	inside	0
+text	play	canvas	738,652,745,662	19.2	9.85	inside	6
+text	play	canvas	774,692,781,702	19.2	19.72	inside	0
+text	play	canvas	797,652,804,662	19.2	9.85	inside	7
+text	play	canvas	834,692,841,702	19.2	19.72	inside	0
+text	play	canvas	476,628,800,641	19.2	15.86	inside	Pickaxe   wood 4  copper 0  iron 0
+screen	play	drawn
+shot	play	prototypes/nightfall-hollow/evidence/play.png
+responds	changed	4

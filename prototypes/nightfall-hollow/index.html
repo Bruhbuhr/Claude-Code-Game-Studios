@@ -1,0 +1,1051 @@
+<!doctype html>
+<!-- PROTOTYPE - NOT FOR PRODUCTION -->
+<!-- Question: Is digging by day and holding a shelter you built by night fun for ten minutes? -->
+<!-- Date: 2026-11-25 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nightfall Hollow</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { font-variant-numeric: tabular-nums; }
+  canvas { display: block; margin: 0 auto; cursor: crosshair; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="config.js"></script>
+<script>
+'use strict';
+// ---- Built to be checked ----------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const tune = new Proxy({}, { get: (_, k) => CONFIG[k].value }); // live: tune.speed is CONFIG.speed.value
+const STEP = 1 / 60;            // simulation step in seconds; motion is per second, never per frame
+const W = 640, H = 360;         // logical size: 16 px tiles at whole-number scale
+const PIXEL = true;             // pixel look: whole-number scale, no smoothing
+const FONT = '"Courier New", monospace';
+const TITLE = 'Nightfall Hollow';
+const CONTROLS = [
+  'A/D or arrows: move  -  Space: jump',
+  'Hold left mouse: dig or attack  -  Right mouse: place',
+  '1-7: pick a slot  -  E: craft  -  P: pause  -  M: mute',
+  'No mouse: F digs ahead, G places ahead (hold S for below)',
+];
+const clock = window.GAME_CLOCK || { now: () => performance.now() / 1000 }; // a check may inject one
+let seed;
+function rng() { // mulberry32; every gameplay random call reads this, never Math.random
+  seed = (seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), seed | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+const events = []; // window.game.events: anything the game wants a run to see
+
+// ---- Screen ---------------------------------------------------------------------------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function fit() { // fills the window at any size and pixel ratio
+  const k = Math.min(innerWidth / W, innerHeight / H);
+  const s = PIXEL ? Math.max(1, Math.floor(k)) : k;
+  const r = PIXEL ? 1 : s * (devicePixelRatio || 1);
+  canvas.width = Math.round(W * r); canvas.height = Math.round(H * r);
+  canvas.style.width = Math.round(W * s) + 'px'; canvas.style.height = Math.round(H * s) + 'px';
+  canvas.style.marginTop = Math.max(0, Math.floor((innerHeight - H * s) / 2)) + 'px';
+  canvas.style.imageRendering = PIXEL ? 'pixelated' : 'auto';
+  ctx.setTransform(r, 0, 0, r, 0, 0); ctx.imageSmoothingEnabled = !PIXEL;
+}
+addEventListener('resize', fit); fit();
+function clear(c) { ctx.fillStyle = c; ctx.fillRect(0, 0, W, H); }
+function text(s, x, y, size, c, align = 'center') {
+  ctx.fillStyle = c; ctx.font = `bold ${size}px ${FONT}`; ctx.textAlign = align;
+  ctx.textBaseline = 'middle'; ctx.fillText(s, Math.round(x), Math.round(y));
+}
+function panel(x, y, w, h, a = 0.72) { ctx.fillStyle = `rgba(12,10,22,${a})`; ctx.fillRect(x, y, w, h); }
+
+// ---- Input: keys by position (event.code), OS key repeat ignored ------------------------
+const down = new Set(), hit = new Set();
+const pressed = code => hit.has(code); // true for one step after the key goes down
+addEventListener('keydown', e => {
+  startAudio();
+  if (!e.repeat) { down.add(e.code); hit.add(e.code); }
+  if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', e => down.delete(e.code));
+addEventListener('blur', () => { down.clear(); mouse.l = mouse.r = false; });
+const mouse = { x: W / 2, y: H / 2, l: false, r: false, seen: false, click: false };
+function mousePos(e) {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left) * W / r.width; mouse.y = (e.clientY - r.top) * H / r.height; mouse.seen = true;
+}
+canvas.addEventListener('pointermove', mousePos);
+canvas.addEventListener('mousedown', e => { // mouse events fire once per button; pointer events do not
+  startAudio(); mousePos(e);
+  if (e.button === 0) { mouse.l = true; mouse.click = true; }
+  if (e.button === 2) mouse.r = true;
+});
+addEventListener('mouseup', e => { if (e.button === 0) mouse.l = false; if (e.button === 2) mouse.r = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => {
+  if (scene === 'play') state.sel = (state.sel + (e.deltaY > 0 ? 1 : SLOTS.length - 1)) % SLOTS.length;
+  e.preventDefault();
+}, { passive: false });
+
+// ---- Audio: started on first input, mute on M --------------------------------------------
+let audio = null, muted = false;
+function startAudio() {
+  if (!audio) {
+    const ac = window.GAME_AUDIO || new (window.AudioContext || window.webkitAudioContext)(); // a check may inject one
+    const out = ac.createGain(); out.gain.value = muted ? 0 : tune.volume;
+    out.connect(ac.destination); audio = { ac, out };
+  }
+  if (audio.ac.state === 'suspended') audio.ac.resume();
+}
+function setMuted(m) { muted = m; if (audio) audio.out.gain.value = m ? 0 : tune.volume; }
+addEventListener('tune', () => setMuted(muted)); // the tweak panel (an add-on), when added, moved a value: the volume follows
+function tone(freq, dur, type = 'square', vol = 0.3) {
+  if (!audio || muted) return;
+  const t = audio.ac.currentTime, o = audio.ac.createOscillator(), g = audio.ac.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(audio.out); o.start(t); o.stop(t + dur);
+}
+
+// ---- The world's pieces -----------------------------------------------------------------
+const T = 16, WW = 220, WH = 80;
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, COPPER = 4, DEEP = 5, IRON = 6, TRUNK = 7, LEAF = 8,
+  PLANK = 9, DOOR = 10, TORCH = 11, BED = 12, BEDROCK = 13;
+// dig: the config value for seconds to break (or a number); tier: pickaxe needed; chew: a gnawer's seconds
+const INFO = [
+  { n: 'air' },
+  { n: 'grass', solid: 1, dig: 'digDirt', drop: 'dirt', chew: 'chewDirt', col: '#7a5233' },
+  { n: 'dirt', solid: 1, dig: 'digDirt', drop: 'dirt', chew: 'chewDirt', col: '#7a5233' },
+  { n: 'stone', solid: 1, dig: 'digStone', drop: 'stone', chew: 'chewStone', col: '#878e98' },
+  { n: 'copper ore', solid: 1, dig: 'digOre', drop: 'copper', chew: 'chewStone', col: '#f0a35a' },
+  { n: 'deep rock', solid: 1, dig: 'digDeep', tier: 1, drop: 'stone', chew: 'chewStone', col: '#5b6170' },
+  { n: 'iron ore', solid: 1, dig: 'digIron', tier: 1, drop: 'iron', chew: 'chewStone', col: '#e3ecf5' },
+  { n: 'tree', dig: 'digWood', drop: 'wood', col: '#8a6238' },
+  { n: 'leaves', dig: 0.12, col: '#57a04b' },
+  { n: 'wood wall', solid: 1, dig: 'digWood', drop: 'plank', chew: 'chewWood', col: '#a8743f' },
+  { n: 'door', solid: 1, dig: 'digWood', drop: 'door', chew: 'chewWood', col: '#8a5a2e' },
+  { n: 'torch', dig: 0.1, drop: 'torch', col: '#ffd27a' },
+  { n: 'bed' },
+  { n: 'bedrock', solid: 1 },
+];
+const solidT = t => INFO[t].solid === 1;            // stops monsters and light
+const solidForPlayer = t => solidT(t) && t !== DOOR; // the digger walks through their own doors
+const SLOTS = [
+  { id: 'pick', name: 'Pickaxe' }, { id: 'sword', name: 'Sword' },
+  { id: 'dirt', name: 'Dirt', tile: DIRT }, { id: 'stone', name: 'Stone', tile: STONE },
+  { id: 'plank', name: 'Wood wall', tile: PLANK }, { id: 'door', name: 'Door', tile: DOOR },
+  { id: 'torch', name: 'Torch', tile: TORCH },
+];
+const WHERE = { wood: 'dig a tree trunk', copper: 'orange glints in the stone', iron: 'pale glints in deep rock', stone: 'under the dirt' };
+const RECIPES = [
+  { name: 'Torch', cost: () => ({ wood: tune.torchWood }), give: s => { s.inv.torch += tune.torchYield; }, yield: () => tune.torchYield },
+  { name: 'Wood wall', cost: () => ({ wood: tune.wallWood }), give: s => { s.inv.plank += tune.wallYield; }, yield: () => tune.wallYield },
+  { name: 'Door', cost: () => ({ wood: tune.doorWood }), give: s => { s.inv.door += 1; } },
+  { name: 'Wood sword', cost: () => ({ wood: tune.swordWoodCost }), give: s => { s.sword = 1; }, owned: s => s.sword >= 1 },
+  { name: 'Copper pickaxe', cost: () => ({ wood: tune.pickCopperWood, copper: tune.pickCopperOre }), give: s => { s.pick = 1; }, owned: s => s.pick >= 1 },
+  { name: 'Copper sword', cost: () => ({ wood: tune.swordCopperWood, copper: tune.swordCopperOre }), give: s => { s.sword = 2; }, owned: s => s.sword >= 2 },
+  { name: 'Iron sword', cost: () => ({ wood: tune.swordIronWood, iron: tune.swordIronOre }), give: s => { s.sword = 3; }, owned: s => s.sword >= 3 },
+];
+
+// ---- Art: every tile and figure drawn here, in the brief's 16-bit pixel look ---------------
+function hsh(a, b, c = 0) { // a fixed hash for textures and twinkles: looks only, never gameplay
+  let n = Math.imul(a + 1, 374761393) ^ Math.imul(b + 1, 668265263) ^ Math.imul(c + 1, 1274126177);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+function mk(w, h, fn) { const c = document.createElement('canvas'); c.width = w; c.height = h; fn(c.getContext('2d')); return c; }
+function speck(g, base, cols, dens, salt) {
+  g.fillStyle = base; g.fillRect(0, 0, T, T);
+  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+    const r = hsh(x, y, salt);
+    if (r < dens) { g.fillStyle = cols[Math.floor(r / dens * cols.length)]; g.fillRect(x, y, 1, 1); }
+  }
+}
+function blobs(g, n, cols, salt) { // nuggets and rock lumps: a body, a shadow and one highlight
+  for (let i = 0; i < n; i++) {
+    const x = 1 + Math.floor(hsh(i, 1, salt) * 11), y = 1 + Math.floor(hsh(i, 2, salt) * 11);
+    const w = 2 + Math.floor(hsh(i, 3, salt) * 2), h = 2 + Math.floor(hsh(i, 4, salt) * 2);
+    g.fillStyle = cols[1]; g.fillRect(x, y + 1, w + 1, h);
+    g.fillStyle = cols[0]; g.fillRect(x, y, w, h);
+    g.fillStyle = cols[2]; g.fillRect(x, y, 1, 1);
+  }
+}
+const TEX = [];
+TEX[DIRT] = mk(T, T, g => speck(g, '#7a5233', ['#5e3d25', '#8f6440', '#694529'], 0.3, 1));
+TEX[GRASS] = mk(T, T, g => {
+  speck(g, '#7a5233', ['#5e3d25', '#8f6440', '#694529'], 0.3, 1);
+  for (let x = 0; x < T; x++) {
+    const d = 3 + Math.floor(hsh(x, 0, 7) * 3);
+    g.fillStyle = '#3f8f3a'; g.fillRect(x, 0, 1, d);
+    g.fillStyle = '#6cc04f'; g.fillRect(x, 0, 1, 1);
+    if (hsh(x, 1, 7) < 0.4) { g.fillStyle = '#2f6e30'; g.fillRect(x, d - 1, 1, 1); }
+  }
+});
+TEX[STONE] = mk(T, T, g => { speck(g, '#6f7680', ['#636a74', '#7a818b'], 0.35, 2); blobs(g, 4, ['#7f8690', '#585e68', '#959ca6'], 3); });
+TEX[COPPER] = mk(T, T, g => { speck(g, '#6f7680', ['#636a74', '#7a818b'], 0.35, 2); blobs(g, 5, ['#d9813a', '#8f4f1f', '#ffc98a'], 4); });
+TEX[DEEP] = mk(T, T, g => { speck(g, '#4a4f5c', ['#40444f', '#535866'], 0.35, 5); blobs(g, 4, ['#5b6170', '#343844', '#70778a'], 6); });
+TEX[IRON] = mk(T, T, g => { speck(g, '#4a4f5c', ['#40444f', '#535866'], 0.35, 5); blobs(g, 5, ['#b9c6d8', '#6f7b8f', '#f4f8fc'], 8); });
+TEX[TRUNK] = mk(T, T, g => {
+  g.fillStyle = '#6b4a2b'; g.fillRect(4, 0, 8, T);
+  g.fillStyle = '#8a6238'; g.fillRect(5, 0, 2, T);
+  g.fillStyle = '#4e3520'; g.fillRect(10, 0, 2, T);
+  for (let y = 0; y < T; y += 5) { g.fillStyle = '#4e3520'; g.fillRect(7, y + 2, 2, 1); }
+});
+TEX[LEAF] = mk(T, T, g => {
+  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+    const r = hsh(x >> 1, y >> 1, 9);
+    if (r < 0.08) continue;
+    g.fillStyle = r < 0.4 ? '#2f6130' : r < 0.8 ? '#3f7d3a' : '#57a04b'; g.fillRect(x, y, 1, 1);
+  }
+});
+TEX[PLANK] = mk(T, T, g => {
+  g.fillStyle = '#a8743f'; g.fillRect(0, 0, T, T);
+  for (let y = 0; y < T; y += 4) {
+    g.fillStyle = '#7d5229'; g.fillRect(0, y + 3, T, 1);
+    g.fillStyle = '#c08a50'; g.fillRect(0, y, T, 1);
+    g.fillStyle = '#7d5229'; g.fillRect((y * 3 + 5) % T, y, 1, 3);
+  }
+});
+TEX[DOOR] = mk(T, T, g => {
+  g.fillStyle = '#5a3a1c'; g.fillRect(2, 0, 12, T);
+  g.fillStyle = '#8a5a2e'; g.fillRect(4, 0, 8, T);
+  g.fillStyle = '#6e4622'; g.fillRect(7, 0, 1, T); g.fillRect(4, 7, 8, 1);
+  g.fillStyle = '#f2c94c'; g.fillRect(10, 9, 1, 2);
+});
+const TORCH_TEX = [0, 1].map(f => mk(T, T, g => {
+  g.fillStyle = '#6b4a2b'; g.fillRect(7, 7, 2, 9);
+  g.fillStyle = '#e8772e'; g.fillRect(6, 3 + f, 4, 5 - f);
+  g.fillStyle = '#ffd27a'; g.fillRect(7, 4 + f, 2, 3 - f);
+  g.fillStyle = '#fff4b0'; g.fillRect(7 + f, 2, 1, 2);
+}));
+TEX[TORCH] = TORCH_TEX[0];
+TEX[BED] = mk(T, T, g => {
+  g.fillStyle = '#5a3a1c'; g.fillRect(0, 12, T, 2); g.fillRect(0, 6, 2, 10); g.fillRect(14, 10, 2, 6);
+  g.fillStyle = '#b8323a'; g.fillRect(5, 8, 10, 4);
+  g.fillStyle = '#d9545b'; g.fillRect(5, 8, 10, 1);
+  g.fillStyle = '#f1ead6'; g.fillRect(2, 8, 4, 4);
+});
+TEX[BEDROCK] = mk(T, T, g => { speck(g, '#16161d', ['#0e0e13', '#22222c'], 0.4, 11); });
+const SIL = {}; // night falls on a tree or the bed in its own shape, never as a square
+for (const t of [TRUNK, LEAF, BED]) SIL[t] = mk(T, T, g => { g.drawImage(TEX[t], 0, 0); g.globalCompositeOperation = 'source-in'; g.fillStyle = 'rgb(6,8,22)'; g.fillRect(0, 0, T, T); });
+const BG_DIRT = mk(T, T, g => speck(g, '#3a281b', ['#32221a', '#42301f'], 0.3, 12));
+const BG_STONE = mk(T, T, g => speck(g, '#2b2e35', ['#25282e', '#32363e'], 0.3, 13));
+const BG_DEEP = mk(T, T, g => speck(g, '#1f2129', ['#1a1c23', '#262933'], 0.3, 14));
+const CRACKS = [1, 2, 3].map(k => mk(T, T, g => {
+  g.fillStyle = 'rgba(20,14,12,0.85)';
+  for (let w = 0; w < k * 2; w++) {
+    let x = 8, y = 8;
+    for (let i = 0; i < 4 + k * 2; i++) {
+      g.fillRect(x, y, 1, 1);
+      x += Math.round(hsh(w, i, 20 + k) * 2 - 1 + (w % 2 ? 0.6 : -0.6)); y += Math.round(hsh(w, i, 30 + k) * 2 - 1 + (w % 3 ? 0.5 : -0.5));
+      if (x < 0 || y < 0 || x >= T || y >= T) break;
+    }
+  }
+}));
+
+// Figures: pixel maps, one colour a letter, then a dark one-pixel outline around the shape
+function art(rows, pal, outline = '#1a1420') {
+  const w = Math.max(...rows.map(r => r.length)), h = rows.length;
+  return mk(w + 2, h + 2, g => {
+    rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (pal[r[x]]) { g.fillStyle = pal[r[x]]; g.fillRect(x + 1, y + 1, 1, 1); } });
+    if (!outline) return;
+    const d = g.getImageData(0, 0, w + 2, h + 2), a = (x, y) => x >= 0 && y >= 0 && x < w + 2 && y < h + 2 && d.data[(y * (w + 2) + x) * 4 + 3] > 0;
+    const edge = [];
+    for (let y = 0; y < h + 2; y++) for (let x = 0; x < w + 2; x++)
+      if (!a(x, y) && (a(x + 1, y) || a(x - 1, y) || a(x, y + 1) || a(x, y - 1))) edge.push([x, y]);
+    g.fillStyle = outline; edge.forEach(([x, y]) => g.fillRect(x, y, 1, 1));
+  });
+}
+const PAL_YOU = { h: '#e9c46a', l: '#fff4b0', s: '#f2c9a0', o: '#e8772e', O: '#b4521a', b: '#4a3426', k: '#2b1b12', g: '#6f7680' };
+const YOU_TOP = [
+  '...hhhhhh...', '..hhhhhhhl..', '..hhhhhhhll.', '..ssssssss..', '..sssksskk..', '..ssssssss..', '...ssssss...',
+  '..oooooooo..', '.oooooooooo.', '.ooOooooOoo.', '.ssOooooOss.', '..gggggggg..', '..oooooooo..',
+];
+const SPR = {
+  you: [
+    art([...YOU_TOP, '..ooo..ooo..', '..OOO..OOO..', '..bbb..bbbb.'], PAL_YOU),
+    art([...YOU_TOP, '..oooo.ooo..', '.OOO....OOO.', '.bbb....bbbb'], PAL_YOU),
+  ],
+};
+const PAL_MON = { v: '#7d4bb8', V: '#45246e', e: '#d8ff5a', t: '#f2ecd8', m: '#2a0f3a' };
+SPR.gnawer = [art([
+  '....vvvvvvvv......', '..vvvvvvvvvvvv....', '.vvvvvvvvvvvvvee..', 'vvvVvvvvvvvvvvevv.', 'vvVVVvvvvvvvvvvvvv',
+  'vvvVvvvvvvvtmtmtmt', 'vvvvvvvvvvmmmmmmmm', 'vvvvvvvvvvvtmtmtmt', '.vvvvvvvvvvvvvvvv.', '.VV..VV....VV..VV.', '.VV..VV....VV..VV.',
+], PAL_MON), art([
+  '....vvvvvvvv......', '..vvvvvvvvvvvv....', '.vvvvvvvvvvvvvee..', 'vvvVvvvvvvvvvvevv.', 'vvVVVvvvvvvvvvvvvv',
+  'vvvVvvvvvvvtmtmtmt', 'vvvvvvvvvvmmmmmmmm', 'vvvvvvvvvvvtmtmtmt', '.vvvvvvvvvvvvvvvv.', '..VV.VV...VV..VV..', '..VV..VV.VV...VV..',
+], PAL_MON)];
+SPR.leaper = [art([
+  '.V......V.', '.VV....VV.', '..vvvvvv..', '.vvevvevv.', '.vvvvvvvv.', '..vvttvv..', '...vvvv...', '..vvvvvv..', '..vVvvVv..',
+  '..vvvvvv..', '...vvvv...', '..VV..VV..', '.VV....VV.', '.V......V.', '.VV....VV.', '..VV..VV..', '..V....V..', '.VV....VV.',
+], PAL_MON), art([
+  '.V......V.', '.VV....VV.', '..vvvvvv..', '.vvevvevv.', '.vvvvvvvv.', '..vvttvv..', '...vvvv...', '..vvvvvv..', '..vVvvVv..',
+  '..vvvvvv..', '...vvvv...', '...VVVV...', '...V..V...', '...V..V...', '...V..V...', '...V..V...', '..VV..VV..', '.VV....VV.',
+], PAL_MON)];
+SPR.flyer = [art([
+  'V....................V', 'VV..................VV', 'VVV................VVV', '.VVVV....v..v....VVVV.', '..VVVVV.vvvvvv.VVVVV..',
+  '...VVVVvvevvevvVVVV...', '....VVVvvvvvvvvVVV....', '......VvvvttvvvV......', '.......vvvvvvvv.......', '........vv..vv........', '........V....V........',
+], PAL_MON), art([
+  '......................', '.........v..v.........', '........vvvvvv........', '..VVVVVvvevvevvVVVVV..', '.VVVVVVvvvvvvvvVVVVVV.',
+  'VVVV.VVvvvttvvvVV.VVVV', 'VVV....vvvvvvvv....VVV', 'VV......vv..vv......VV', 'V.......V....V.......V', '......................', '......................',
+], PAL_MON)];
+const KIND = { // each monster's box, its eyes (sprite pixels that glow through the dark) and its name
+  gnawer: { w: 16, h: 10, name: 'Gnawer', eyes: [[[14, 2], [15, 2], [14, 3]], [[14, 2], [15, 2], [14, 3]]] },
+  leaper: { w: 8, h: 17, name: 'Leaper', eyes: [[[3, 3], [6, 3]], [[3, 3], [6, 3]]] },
+  flyer: { w: 14, h: 8, name: 'Duskwing', eyes: [[[9, 5], [12, 5]], [[9, 3], [12, 3]]] },
+};
+const TOOL_PAL = [{ H: '#9aa3ad', s: '#8a6238' }, { H: '#d9813a', s: '#8a6238' }];
+const PICK_ROWS = ['..HHHHHH...', '.HHHHHHHH..', 'HH....sHHH.', 'H....sss.HH', '....sss...H', '...sss.....', '..sss......', '.sss.......', 'sss........', 'ss.........'];
+const SWORD_ROWS = ['.........BB', '........BBB', '.......BBB.', '......BBB..', '.....BBB...', '.g..BBB....', '.ggBBB.....', '..ggB......', '.sggg......', 'ss..g......', 's..........'];
+SPR.pick = TOOL_PAL.map(p => art(PICK_ROWS, p));
+SPR.sword = ['#55505f', '#c79a5f', '#f0a35a', '#dfe8f2'].map(b => art(SWORD_ROWS, { B: b, g: '#f2c94c', s: '#6b4a2b' }));
+SPR.heart = ['#e5484d', '#3a2030'].map(c => art(['.rr...rr.', 'rrrr.rrrr', 'rrrrrrrrr', 'rrrrrrrrr', '.rrrrrrr.', '..rrrrr..', '...rrr...', '....r....'], { r: c }));
+SPR.sun = art(['....y....', '.y..y..y.', '..yyyyy..', '..yYYYy..', 'yyyYYYyyy', '..yYYYy..', '..yyyyy..', '.y..y..y.', '....y....'], { y: '#f2c94c', Y: '#fff4b0' }, null);
+SPR.moon = art(['..www...', '.wwww...', 'www.....', 'www.....', 'www.....', 'wwww..w.', '.wwwwww.', '..wwww..'], { w: '#dfe8f2' }, null);
+SPR.pouch = art(['...kk...', '..kttk..', '..tttt..', '.tttttt.', 'tttTtttt', 'ttTTTttt', 'tttttttt', '.tttttt.'], { t: '#c79a5f', T: '#8a6238', k: '#6b4a2b' });
+function sprite(c, x, y, flip) {
+  x = Math.round(x); y = Math.round(y);
+  if (!flip) { ctx.drawImage(c, x, y); return; }
+  ctx.save(); ctx.translate(x + c.width, y); ctx.scale(-1, 1); ctx.drawImage(c, 0, 0); ctx.restore();
+}
+
+// ---- World: generated from the seed each run ----------------------------------------------
+let scene, state, runs = 0;
+const idx = (x, y) => y * WW + x;
+const get = (x, y) => (x < 0 || y < 0 || x >= WW || y >= WH) ? (y < 0 && x >= 0 && x < WW ? AIR : BEDROCK) : state.world[y * WW + x];
+function recomputeTop(x) { let y = 0; while (y < WH && !solidT(state.world[idx(x, y)])) y++; state.top[x] = y; }
+function setTile(x, y, t) {
+  if (x < 0 || y < 0 || x >= WW || y >= WH) return;
+  state.world[idx(x, y)] = t; state.dmg.delete(idx(x, y)); recomputeTop(x);
+}
+function genWorld(s) {
+  const w = s.world, surf = s.surf, sx = s.sx;
+  const p1 = rng() * 6.28, p2 = rng() * 6.28, p3 = rng() * 6.28;
+  const hAt = x => 24 + Math.round(3.2 * Math.sin(x * 0.05 + p1) + 2.2 * Math.sin(x * 0.11 + p2) + 1.2 * Math.sin(x * 0.23 + p3));
+  for (let x = 0; x < WW; x++) {
+    const h = Math.abs(x - sx) <= 5 ? hAt(sx) : hAt(x), dirt = 5 + Math.floor(rng() * 3);
+    const deep = 52 + Math.round(2 * Math.sin(x * 0.09 + p2));
+    surf[x] = h;
+    for (let y = 0; y < WH; y++) {
+      let t = AIR;
+      if (y >= WH - 2 || x === 0 || x === WW - 1) t = y >= h - 30 ? BEDROCK : AIR;
+      else if (y === h) t = GRASS; else if (y > h && y < h + dirt) t = DIRT;
+      else if (y >= h + dirt && y < deep) t = STONE; else if (y >= deep) t = DEEP;
+      w[idx(x, y)] = t;
+    }
+  }
+  const carve = (cx, cy, r, open) => {
+    for (let y = Math.floor(cy - r); y <= cy + r; y++) for (let x = Math.floor(cx - r); x <= cx + r; x++) {
+      if (x < 1 || x >= WW - 1 || y < 1 || y >= WH - 2) continue;
+      if ((x - cx) ** 2 + (y - cy) ** 2 > r * r) continue;
+      if (!open && y < surf[x] + 3) continue;               // the surface stays whole
+      if (Math.abs(x - sx) < 8 && y < surf[x] + 4) continue; // and so does the ground under the bed
+      w[idx(x, y)] = AIR;
+    }
+  };
+  const worm = (x, y, ang, len, open) => {
+    for (let i = 0; i < len; i++) {
+      carve(x, y, 1.1 + rng() * 1.2, open);
+      ang += (rng() - 0.5) * 0.9; x += Math.cos(ang); y += Math.sin(ang) * 0.6;
+      if (open && i > 8) open = false;
+    }
+  };
+  for (let i = 0; i < tune.caves; i++) {
+    const x = 2 + rng() * (WW - 4), top = surf[Math.floor(x)] + 8;
+    worm(x, top + rng() * (WH - 6 - top), rng() * 6.28, 25 + rng() * 60, false);
+  }
+  for (let i = 0; i < 5; i++) { // a few cave mouths that open onto the surface
+    const x = 10 + rng() * (WW - 20);
+    if (Math.abs(x - sx) > 14) worm(x, surf[Math.floor(x)], 1.57 + (rng() - 0.5), 30 + rng() * 30, true);
+  }
+  worm(sx + 8, surf[sx] + 10, 0.4, 26, false); // the first cave, a short dig from the bed
+  const vein = (x, y, n, from, to) => {
+    for (let i = 0; i < n; i++) {
+      if (x > 0 && x < WW - 1 && y > 0 && y < WH - 2 && w[idx(x, y)] === from) w[idx(x, y)] = to;
+      if (rng() < 0.5) x += rng() < 0.5 ? -1 : 1; else y += rng() < 0.5 ? -1 : 1;
+    }
+  };
+  for (let i = 0; i < tune.copperVeins; i++) vein(Math.floor(rng() * WW), 28 + Math.floor(rng() * 26), 4 + Math.floor(rng() * 6), STONE, COPPER);
+  for (let i = 0; i < tune.ironVeins; i++) vein(Math.floor(rng() * WW), 52 + Math.floor(rng() * 24), 4 + Math.floor(rng() * 6), DEEP, IRON);
+  for (const [dx, dy] of [[4, 6], [5, 6], [5, 7], [4, 7], [6, 7]]) w[idx(sx + dx, surf[sx] + dy)] = COPPER; // the first glint
+  const tree = x => {
+    const h = surf[x], ht = 4 + Math.floor(rng() * 3);
+    if (w[idx(x, h)] !== GRASS) return;
+    for (let y = h - ht; y < h; y++) w[idx(x, y)] = TRUNK;
+    for (let yy = -2; yy <= 1; yy++) for (let xx = -2; xx <= 2; xx++) {
+      const X = x + xx, Y = h - ht + yy;
+      if (Math.abs(xx) + Math.abs(yy) > 3 || X < 1 || X >= WW - 1 || Y < 1) continue;
+      if (w[idx(X, Y)] === AIR) w[idx(X, Y)] = LEAF;
+    }
+  };
+  let lastTree = -9;
+  for (let x = 4; x < WW - 4; x++) {
+    if (Math.abs(x - sx) <= 3) continue;
+    if (x === sx - 5 || x === sx + 9 || (rng() < tune.treeChance && x - lastTree > 2)) { tree(x); lastTree = x; }
+  }
+  w[idx(sx, surf[sx] - 1)] = BED;
+  for (let x = 0; x < WW; x++) { let y = 0; while (y < WH && !solidT(w[idx(x, y)])) y++; s.top[x] = y; }
+}
+function reset() {
+  const given = Number(params.get('seed'));
+  // A fresh world each run. A check (a driven browser, an injected clock, ?seed=) gets the same worlds every time.
+  const fresh = !given && !navigator.webdriver && !window.GAME_CLOCK;
+  seed = given ? given + runs : fresh ? (Date.now() % 2147483647) : CONFIG.seed + runs;
+  runs++;
+  const sx = WW >> 1;
+  state = {
+    t: 0, score: 0, gained: '', worldSeed: seed,
+    world: new Uint8Array(WW * WH), surf: new Int16Array(WW), top: new Int16Array(WW), sx,
+    dmg: new Map(),           // cracks: tile index to how broken it is, 0 to 1
+    time: 0, phase: 'day',
+    p: { x: 0, y: 0, w: 10, h: 15, vx: 0, vy: 0, onGround: false, dir: 1, hp: tune.playerHp, safe: 0, walk: 0, swing: 0, cool: 0 },
+    inv: { dirt: 0, stone: 0, wood: 0, copper: 0, iron: 0, plank: 0, door: 0, torch: 0 },
+    pick: 0, sword: 0, sel: 0, craft: false, tut: 0, placeCool: 0, digSound: 0, warnCool: 0,
+    monsters: [], items: [], parts: [], floats: [], pouches: [],
+    spawnT: 0, deaths: 0, dug: 0, killed: 0,
+    cam: { x: 0, y: 0 },
+  };
+  genWorld(state);
+  wake();
+  state.cam.x = state.p.x - W / 2; state.cam.y = state.p.y - H / 2; clampCam();
+}
+function wake() { // at the bed
+  const s = state, p = s.p;
+  p.x = (s.sx + 1) * T + 3; p.y = s.surf[s.sx + 1] * T - p.h - 0.01; p.vx = p.vy = 0; p.hp = tune.playerHp; p.safe = 2;
+  while (boxHits(p.x, p.y, p.w, p.h, solidForPlayer)) p.y -= T; // a wall built beside the bed: wake on top of it
+}
+function clampCam() {
+  const c = state.cam;
+  c.x = Math.max(0, Math.min(WW * T - W, c.x)); c.y = Math.max(-H / 2, Math.min(WH * T - H, c.y));
+}
+
+// ---- Time of day ----------------------------------------------------------------------------
+const cycle = () => tune.dayLength + tune.duskLength + tune.nightLength;
+function phaseAt(time) {
+  const tc = time % cycle();
+  return tc < tune.dayLength ? 'day' : tc < tune.dayLength + tune.duskLength ? 'dusk' : 'night';
+}
+function daylight(time) { // 1 in full day, 0 at night
+  const tc = time % cycle(), n = Math.floor(time / cycle());
+  if (tc < tune.dayLength) return n > 0 && tc < 8 ? tc / 8 : 1;
+  if (tc < tune.dayLength + tune.duskLength) return 1 - (tc - tune.dayLength) / tune.duskLength;
+  return 0;
+}
+
+// ---- Bodies against tiles -------------------------------------------------------------------
+function boxHits(x, y, w, h, solid) {
+  const x0 = Math.floor(x / T), x1 = Math.floor((x + w) / T), y0 = Math.floor(y / T), y1 = Math.floor((y + h) / T);
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) if (solid(get(tx, ty))) return true;
+  return false;
+}
+function moveBox(e, dt, solid) {
+  e.onGround = false; e.hitX = 0; e.hitY = 0;
+  e.vy = Math.max(-560, Math.min(560, e.vy));
+  let nx = e.x + e.vx * dt;
+  if (boxHits(nx, e.y, e.w, e.h, solid)) {
+    if (!boxHits(e.x, e.y, e.w, e.h, solid)) {
+      nx = e.vx > 0 ? Math.floor((nx + e.w) / T) * T - e.w - 0.01 : Math.floor(nx / T) * T + T + 0.01;
+      if (boxHits(nx, e.y, e.w, e.h, solid)) nx = e.x;
+    }
+    e.hitX = Math.sign(e.vx); e.vx = 0;
+  }
+  e.x = nx;
+  let ny = e.y + e.vy * dt;
+  if (boxHits(e.x, ny, e.w, e.h, solid)) {
+    if (!boxHits(e.x, e.y, e.w, e.h, solid)) {
+      const downward = e.vy > 0;
+      ny = downward ? Math.floor((ny + e.h) / T) * T - e.h - 0.01 : Math.floor(ny / T) * T + T + 0.01;
+      if (boxHits(e.x, ny, e.w, e.h, solid)) ny = e.y;
+      if (downward) e.onGround = true;
+    }
+    e.hitY = Math.sign(e.vy); e.vy = 0;
+  }
+  e.y = ny;
+}
+const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+// ---- Small things: bits, pickups, words that float up ------------------------------------------
+function spray(x, y, col, n, speed = 70) {
+  for (let i = 0; i < n; i++) state.parts.push({ x, y, vx: (rng() - 0.5) * speed * 2, vy: -rng() * speed - 20, life: 0.3 + rng() * 0.4, col });
+}
+function say(x, y, s, col = '#fff4b0') { state.floats.push({ x, y, s, col, life: 1.6 }); }
+const CHIME = { dirt: 330, stone: 392, wood: 440, copper: 660, iron: 784, plank: 494, door: 494, torch: 523 };
+
+// ---- Digging, placing, crafting -----------------------------------------------------------------
+const digTime = t => { const d = INFO[t].dig; return typeof d === 'string' ? tune[d] : d; };
+function breakTile(tx, ty, drops = true) {
+  const s = state, t = get(tx, ty), info = INFO[t];
+  if (t === AIR || t === BED || t === BEDROCK) return;
+  setTile(tx, ty, AIR);
+  spray(tx * T + 8, ty * T + 8, info.col, 8);
+  if (drops && info.drop) s.items.push({ x: tx * T + 8, y: ty * T + 8, id: info.drop, age: 0 });
+  events.push({ type: 'break', tile: info.n });
+  if (t === TRUNK) { // the tree comes down with it
+    if (get(tx, ty - 1) === TRUNK) breakTile(tx, ty - 1, drops);
+    else for (let yy = -3; yy <= 1; yy++) for (let xx = -2; xx <= 2; xx++) if (get(tx + xx, ty + yy) === LEAF) { setTile(tx + xx, ty + yy, AIR); spray((tx + xx) * T + 8, (ty + yy) * T + 8, '#57a04b', 2); }
+  }
+  if (get(tx, ty - 1) === TORCH && !supported(tx, ty - 1)) breakTile(tx, ty - 1, drops);
+}
+const supported = (tx, ty) => ty > state.surf[Math.max(0, Math.min(WW - 1, tx))] ||
+  [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => { const n = get(tx + a, ty + b); return n !== AIR && n !== LEAF && n !== TORCH; });
+function inReach(tx, ty) {
+  const p = state.p, dx = tx * T + 8 - (p.x + p.w / 2), dy = ty * T + 8 - (p.y + p.h / 2);
+  return dx * dx + dy * dy <= (tune.reach * T) ** 2;
+}
+function digAt(tx, ty, dt) {
+  const s = state, t = get(tx, ty), info = INFO[t];
+  if (t === AIR || !inReach(tx, ty)) return;
+  if (info.dig === undefined || (info.tier || 0) > s.pick) {
+    if (s.warnCool <= 0) {
+      say(tx * T + 8, ty * T, t === BED ? 'Your bed: you wake here' : t === BEDROCK ? 'Bedrock: nothing breaks it' : 'Needs a copper pickaxe', '#ffb4a8');
+      tone(110, 0.08, 'square', 0.15); s.warnCool = 1.2;
+    }
+    return;
+  }
+  const power = s.pick >= 1 ? tune.pickPowerCopper : 1, i = idx(tx, ty);
+  const d = (s.dmg.get(i) || 0) + dt * power / digTime(t);
+  s.p.swing = 0.12;
+  s.digSound -= dt;
+  if (s.digSound <= 0) { s.digSound = 0.14; tone(t === DIRT || t === GRASS ? 150 : t === TRUNK ? 200 : 260, 0.05, 'square', 0.12); spray(tx * T + 8, ty * T + 8, info.col, 2, 50); }
+  if (d >= 1) {
+    breakTile(tx, ty); s.dug++; tone(90, 0.12, 'triangle', 0.3);
+    if (s.tut < 1) s.tut = 1;
+  } else s.dmg.set(i, d);
+}
+function canPlace(tx, ty, tile) {
+  const s = state, t = get(tx, ty);
+  if (tx < 1 || tx >= WW - 1 || ty < 1 || ty >= WH - 2) return false;
+  if ((t !== AIR && t !== LEAF) || !inReach(tx, ty)) return false;
+  const box = { x: tx * T, y: ty * T, w: T, h: T };
+  if (solidT(tile)) {
+    if (tile !== DOOR && overlap(box, s.p)) return false;
+    if (s.monsters.some(m => overlap(box, m))) return false;
+  }
+  return supported(tx, ty);
+}
+function placeAt(tx, ty) {
+  const s = state, slot = SLOTS[s.sel];
+  if (!slot.tile || s.inv[slot.id] <= 0 || s.placeCool > 0 || !canPlace(tx, ty, slot.tile)) return;
+  setTile(tx, ty, slot.tile); s.inv[slot.id]--; s.placeCool = 0.14;
+  tone(slot.tile === TORCH ? 520 : 180, 0.06, 'triangle', 0.25);
+  events.push({ type: 'place', tile: INFO[slot.tile].n });
+  if (s.tut === 3) s.tut = 4;
+}
+function canCraft(r) { const c = r.cost(); return !(r.owned && r.owned(state)) && Object.keys(c).every(k => state.inv[k] >= c[k]); }
+function craft(i) {
+  const s = state, r = RECIPES[i];
+  if (!r) return;
+  if (!canCraft(r)) { tone(110, 0.08, 'square', 0.15); return; }
+  const c = r.cost(); for (const k in c) s.inv[k] -= c[k];
+  r.give(s); tone(523, 0.08, 'triangle', 0.3); tone(784, 0.12, 'triangle', 0.25);
+  say(s.p.x + 5, s.p.y - 8, 'Made: ' + r.name);
+  events.push({ type: 'craft', item: r.name });
+  if (s.tut < 3) s.tut = 3;
+}
+const CRAFT = { x: 8, y: 58, w: 320, row: 26 };
+
+// ---- Monsters ---------------------------------------------------------------------------------
+// Which monsters a night draws from. One is picked at random per spawn, so a kind listed twice
+// comes twice as often. night is 1 for the first night.
+function nightPool(night) {
+  // TODO(human): shape the three nights. This default adds one kind a night.
+  return night <= 1 ? ['gnawer'] : night === 2 ? ['gnawer', 'gnawer', 'leaper'] : ['gnawer', 'leaper', 'flyer'];
+}
+function spawnMonster(night) {
+  const s = state, p = s.p;
+  const pool = nightPool(night), kind = pool[Math.floor(rng() * pool.length)], k = KIND[kind];
+  let side = rng() < 0.5 ? -1 : 1, x = p.x + side * (W / 2 + 30 + rng() * 80);
+  if (x < 2 * T || x > (WW - 3) * T) { side = -side; x = p.x + side * (W / 2 + 30 + rng() * 80); }
+  x = Math.max(2 * T, Math.min((WW - 3) * T, x));
+  const tx = Math.floor(x / T), top = Math.min(s.top[tx], s.top[Math.floor((x + k.w) / T)]); // the higher of the columns it stands across
+  const y = kind === 'flyer' ? (s.surf[tx] - 7) * T : top * T - k.h - 1;
+  s.monsters.push({ kind, x, y, w: k.w, h: k.h, vx: 0, vy: 0, hp: tune[kind + 'Hp'], dir: -side, t: rng(), hurt: 0, anim: 0, burn: false });
+  events.push({ type: 'spawn', kind });
+}
+function chew(tx, ty, dt) {
+  const s = state, t = get(tx, ty), info = INFO[t];
+  if (!info.chew) return;
+  const i = idx(tx, ty), d = (s.dmg.get(i) || 0) + dt / (tune[info.chew] * (t === DEEP || t === IRON ? 1.5 : 1));
+  if (hsh(Math.floor(s.time * 8), i) < 0.3) { spray(tx * T + 8, ty * T + 8, info.col, 1, 40); }
+  if (Math.floor(s.time * 4) !== Math.floor((s.time - dt) * 4)) tone(70 + rng() * 20, 0.06, 'sawtooth', 0.12);
+  if (d >= 1) { breakTile(tx, ty); events.push({ type: 'chewed', tile: info.n }); } else s.dmg.set(i, d);
+}
+function updateMonster(m, dt) {
+  const s = state, p = s.p, cx = m.x + m.w / 2, cy = m.y + m.h / 2;
+  const dx = p.x + p.w / 2 - cx, dy = p.y + p.h / 2 - cy, dir = dx >= 0 ? 1 : -1;
+  m.hurt -= dt; m.anim += dt;
+  if (m.burn) { m.hp -= 40 * dt; if (hsh(Math.floor(s.time * 20), m.x | 0) < 0.5) spray(cx, m.y, '#ffd27a', 1, 30); }
+  if (m.kind === 'gnawer') {
+    if (m.hurt <= 0) m.vx = Math.abs(dx) > 6 ? dir * tune.gnawerSpeed : 0;
+    m.vy += tune.gravity * dt; m.dir = dir;
+    moveBox(m, dt, solidT);
+    const mtx = Math.floor(cx / T), fty = Math.floor((m.y + m.h - 2) / T);
+    if (m.hitX) {
+      const tx = Math.floor((m.hitX > 0 ? m.x + m.w + 3 : m.x - 3) / T);
+      if (m.onGround && solidT(get(tx, fty)) && !solidT(get(tx, fty - 1)) && !solidT(get(mtx, fty - 1))) m.vy = -tune.gnawerHop; // one block: hop it
+      else chew(tx, solidT(get(tx, fty)) ? fty : fty - 1, dt); // two or more: through it
+    } else if (Math.abs(dx) <= 6 && dy > 8 && m.onGround) { // the digger went down: chew a hole as wide as itself and follow
+      for (let c = Math.floor(m.x / T); c <= Math.floor((m.x + m.w) / T); c++) chew(c, Math.floor((m.y + m.h + 3) / T), dt);
+    } else if (Math.abs(dx) <= 6 && dy < -12 && dy > -5 * T && m.onGround) { // the digger went up: gnaw out what they stand on
+      for (let c = Math.floor(p.x / T); c <= Math.floor((p.x + p.w) / T); c++) chew(c, Math.floor((p.y + p.h + 3) / T), dt);
+    }
+  } else if (m.kind === 'leaper') {
+    m.vy += tune.gravity * dt; m.dir = dir;
+    if (!m.onGround && m.hurt <= 0) m.vx = dir * tune.leaperSpeed; // steers in the air, so a wall it brushes never pins it
+    moveBox(m, dt, solidT);
+    if (m.onGround) {
+      m.vx = 0; m.t -= dt;
+      if (m.t <= 0) { m.vx = dir * tune.leaperSpeed; m.vy = -tune.leaperJump; m.t = tune.leaperRest * (0.8 + rng() * 0.5); tone(300, 0.05, 'square', 0.08); }
+    }
+  } else { // duskwing: straight at the digger through open air, sliding along what it hits
+    const d = Math.hypot(dx, dy) || 1, sp = tune.flyerSpeed;
+    if (m.hurt <= 0) { m.vx = dx / d * sp; m.vy = dy / d * sp + Math.sin(m.anim * 5) * 14; }
+    if (m.slide > 0) { m.slide -= dt; if (m.slideX) m.vx = m.slideX * sp; else m.vy = m.slideY * sp; }
+    m.dir = dir;
+    moveBox(m, dt, solidT);
+    if (m.hitX && !(m.slide > 0)) { m.slide = 0.7; m.slideX = 0; m.slideY = dy > 0 ? 1 : -1; }
+    else if (m.hitY && !(m.slide > 0)) { m.slide = 0.7; m.slideY = 0; m.slideX = dir; }
+  }
+  m.x = Math.max(T, Math.min((WW - 2) * T, m.x));
+  if (p.safe <= 0 && !m.burn && overlap(m, p)) hurtPlayer(tune[m.kind + 'Damage'], dir);
+}
+function hurtPlayer(n, dir) {
+  const s = state, p = s.p;
+  p.hp -= n; p.safe = tune.invuln; p.vx = dir * tune.knockback; p.vy = -160; p.knock = 0.2;
+  spray(p.x + 5, p.y + 6, '#e5484d', 8); tone(160, 0.15, 'sawtooth', 0.3);
+  events.push({ type: 'hurt', hp: p.hp });
+}
+function hitMonsters(dmg) {
+  const s = state, p = s.p;
+  const box = { x: p.dir > 0 ? p.x + p.w / 2 : p.x + p.w / 2 - tune.swingRange, y: p.y - 12, w: tune.swingRange, h: p.h + 24 };
+  let any = false;
+  for (const m of s.monsters) if (overlap(box, m)) {
+    m.hp -= dmg; m.hurt = 0.25; m.vx = p.dir * tune.knockback; m.vy = -120; any = true;
+    spray(m.x + m.w / 2, m.y + m.h / 2, '#7d4bb8', 6);
+  }
+  tone(any ? 240 : 420, 0.07, any ? 'sawtooth' : 'triangle', 0.2);
+  return any;
+}
+
+// ---- One step of play ---------------------------------------------------------------------------
+function cursorTile() { // where the digger is pointing: the mouse, or with F and G the block ahead
+  const s = state, p = s.p;
+  if (down.has('KeyF') || down.has('KeyG')) {
+    const ptx = Math.floor((p.x + p.w / 2) / T), pty = Math.floor((p.y + p.h / 2) / T);
+    return (down.has('KeyS') || down.has('ArrowDown')) ? { tx: ptx, ty: pty + 1 } : { tx: ptx + p.dir, ty: pty };
+  }
+  return { tx: Math.floor((mouse.x + Math.round(s.cam.x)) / T), ty: Math.floor((mouse.y + Math.round(s.cam.y)) / T) };
+}
+function play(dt) {
+  const s = state, p = s.p;
+  const before = phaseAt(s.time), nBefore = Math.floor(s.time / cycle());
+  s.time += dt; s.t += dt;
+  const phase = phaseAt(s.time), n = Math.floor(s.time / cycle());
+  s.phase = phase; s.score = n;
+  if (phase !== before) {
+    if (phase === 'dusk') { tone(196, 0.8, 'sine', 0.3); tone(147, 1.2, 'sine', 0.25); events.push({ type: 'dusk' }); }
+    if (phase === 'night') { s.spawnT = tune.spawnFirst; tone(98, 1.5, 'sawtooth', 0.2); events.push({ type: 'night', n: n + 1 }); }
+    if (phase === 'day' && n > nBefore) {
+      s.monsters.forEach(m => { m.burn = true; });
+      tone(523, 0.3, 'triangle', 0.3); tone(659, 0.5, 'triangle', 0.3); events.push({ type: 'dawn', n });
+      if (n >= tune.nightsToWin) {
+        s.gained = `You held the hollow for ${n} night${n === 1 ? '' : 's'}`;
+        scene = 'results'; events.push({ type: 'win' }); return;
+      }
+    }
+  }
+
+  // craft list and hotbar
+  if (pressed('KeyE')) s.craft = !s.craft;
+  for (let i = 0; i < 7; i++) if (pressed('Digit' + (i + 1))) { if (s.craft) craft(i); else s.sel = i; }
+  let clickedCraft = false;
+  if (mouse.click && s.craft && mouse.x >= CRAFT.x && mouse.x < CRAFT.x + CRAFT.w) {
+    const i = Math.floor((mouse.y - CRAFT.y - 18) / CRAFT.row);
+    if (i >= 0 && i < RECIPES.length) { craft(i); clickedCraft = true; mouse.l = false; }
+  }
+  mouse.click = false;
+
+  // moving
+  const left = down.has('KeyA') || down.has('ArrowLeft'), right = down.has('KeyD') || down.has('ArrowRight');
+  const jump = down.has('Space') || down.has('KeyW') || down.has('ArrowUp');
+  p.knock = (p.knock || 0) - dt;
+  if (p.knock <= 0) p.vx = (right ? 1 : 0) * tune.moveSpeed - (left ? 1 : 0) * tune.moveSpeed;
+  if (p.vx !== 0 && p.knock <= 0) { p.dir = Math.sign(p.vx); p.walk += dt * 9; } else p.walk = 0;
+  if (jump && p.onGround) { p.vy = -tune.jumpSpeed; tone(330, 0.04, 'square', 0.06); }
+  p.vy += tune.gravity * dt;
+  const wasGround = p.onGround;
+  moveBox(p, dt, solidForPlayer);
+  if (!jump && wasGround && !p.onGround && p.vy >= 0) p.onGround = false;
+  p.x = Math.max(T + 1, Math.min((WW - 2) * T, p.x));
+  p.safe -= dt; p.swing -= dt; p.cool -= dt; s.placeCool -= dt; s.warnCool -= dt;
+
+  // acting
+  const cur = cursorTile(), slot = SLOTS[s.sel];
+  const acting = (mouse.l && !clickedCraft) || down.has('KeyF'), placing = mouse.r || down.has('KeyG');
+  if ((mouse.l || mouse.r) && !down.has('KeyF') && !down.has('KeyG')) p.dir = cur.tx * T + 8 >= p.x + p.w / 2 ? 1 : -1;
+  if (acting) {
+    const cp = { x: cur.tx * T + 8, y: cur.ty * T + 8 };
+    const aimed = s.monsters.some(m => cp.x > m.x - 8 && cp.x < m.x + m.w + 8 && cp.y > m.y - 8 && cp.y < m.y + m.h + 8);
+    if (slot.id === 'sword' || aimed) {
+      if (p.cool <= 0) {
+        const dmg = slot.id === 'sword' && s.sword > 0 ? [0, tune.swordWood, tune.swordCopper, tune.swordIron][s.sword] : tune.pickDamage;
+        hitMonsters(dmg); p.cool = tune.swingTime; p.swing = 0.15;
+        if (slot.id === 'sword' && s.sword === 0 && s.warnCool <= 0) { say(p.x + 5, p.y - 8, 'No sword yet: press E to craft one', '#ffb4a8'); s.warnCool = 2; }
+      }
+    } else digAt(cur.tx, cur.ty, dt);
+  }
+  if (placing) placeAt(cur.tx, cur.ty);
+
+  // the night
+  const cap = tune.monsterCap + tune.monsterCapStep * n;
+  if (phase === 'night') {
+    s.spawnT -= dt;
+    if (s.spawnT <= 0 && s.monsters.length < cap) {
+      spawnMonster(n + 1);
+      s.spawnT = Math.max(tune.spawnIntervalMin, tune.spawnInterval - tune.spawnIntervalStep * n);
+    }
+  }
+  for (const m of s.monsters) updateMonster(m, dt);
+  for (const m of s.monsters) if (m.hp <= 0) {
+    spray(m.x + m.w / 2, m.y + m.h / 2, m.burn ? '#ffd27a' : '#45246e', 14, 90);
+    if (!m.burn) { s.killed++; tone(140, 0.2, 'sawtooth', 0.25); }
+  }
+  s.monsters = s.monsters.filter(m => m.hp > 0);
+
+  // pickups fly to the digger
+  const pcx = p.x + p.w / 2, pcy = p.y + p.h / 2;
+  for (const it of s.items) {
+    it.age += dt;
+    const dx = pcx - it.x, dy = pcy - it.y, d = Math.hypot(dx, dy) || 1;
+    if (it.age > 0.18 && d < 110) { const v = 120 + it.age * 320; it.x += dx / d * v * dt; it.y += dy / d * v * dt; }
+    if (d < 9 && it.age > 0.18) {
+      it.got = true; s.inv[it.id]++; tone(CHIME[it.id], 0.07, 'triangle', 0.2);
+      if (it.id === 'wood' && s.tut === 1) s.tut = 2;
+      if (it.id === 'copper' && s.tut === 4) s.tut = 5;
+    }
+  }
+  s.items = s.items.filter(it => !it.got);
+  for (const po of s.pouches) if (Math.hypot(pcx - po.x, pcy - po.y) < 14) {
+    po.got = true; for (const k in po.inv) s.inv[k] += po.inv[k];
+    tone(523, 0.1, 'triangle', 0.3); tone(784, 0.15, 'triangle', 0.25); say(po.x, po.y - 10, 'Got your pouch back');
+  }
+  s.pouches = s.pouches.filter(po => !po.got);
+  for (const q of s.parts) { q.life -= dt; q.vy += 500 * dt; q.x += q.vx * dt; q.y += q.vy * dt; }
+  s.parts = s.parts.filter(q => q.life > 0);
+  for (const f of s.floats) { f.life -= dt; f.y -= 14 * dt; }
+  s.floats = s.floats.filter(f => f.life > 0);
+
+  // torchlight mends
+  if (p.hp < tune.playerHp) {
+    const ptx = Math.floor(pcx / T), pty = Math.floor(pcy / T), r = tune.regenRange;
+    let near = false;
+    for (let y = -r; y <= r && !near; y++) for (let x = -r; x <= r; x++) if (get(ptx + x, pty + y) === TORCH) { near = true; break; }
+    if (near) p.hp = Math.min(tune.playerHp, p.hp + tune.regen * dt);
+  }
+  // falling asleep the hard way
+  if (p.hp <= 0) {
+    const carried = Object.values(s.inv).some(v => v > 0);
+    if (carried) { s.pouches.push({ x: pcx, y: pcy, inv: { ...s.inv } }); for (const k in s.inv) s.inv[k] = 0; }
+    s.deaths++; wake(); tone(110, 0.6, 'sawtooth', 0.3);
+    say(p.x + 5, p.y - 14, carried ? 'You wake at your bed. Your pouch lies where you fell.' : 'You wake at your bed.', '#ffb4a8');
+    events.push({ type: 'death' });
+  }
+  s.cam.x += (p.x + p.w / 2 - W / 2 - s.cam.x) * 0.15; s.cam.y += (p.y + p.h / 2 - H / 2 - s.cam.y) * 0.15; clampCam();
+}
+
+// ---- Light: the sky from above, torches and the helmet lamp, spread tile to tile ------------------
+const LM = 10, LW = Math.ceil(W / T) + 2 + LM * 2, LH = Math.ceil(H / T) + 2 + LM * 2;
+const lightA = new Uint8Array(LW * LH), warmA = new Uint8Array(LW * LH), opq = new Uint8Array(LW * LH);
+function spread(a) {
+  for (let lv = 15; lv > 1; lv--) for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) {
+    const i = y * LW + x;
+    if (a[i] !== lv) continue;
+    if (x > 0) { const n = i - 1, v = lv - (opq[n] ? 3 : 1); if (v > a[n]) a[n] = v; }
+    if (x < LW - 1) { const n = i + 1, v = lv - (opq[n] ? 3 : 1); if (v > a[n]) a[n] = v; }
+    if (y > 0) { const n = i - LW, v = lv - (opq[n] ? 3 : 1); if (v > a[n]) a[n] = v; }
+    if (y < LH - 1) { const n = i + LW, v = lv - (opq[n] ? 3 : 1); if (v > a[n]) a[n] = v; }
+  }
+}
+function computeLight(x0, y0, sky) {
+  const s = state, p = s.p;
+  lightA.fill(0); warmA.fill(0);
+  for (let ly = 0; ly < LH; ly++) for (let lx = 0; lx < LW; lx++) {
+    const tx = x0 + lx, ty = y0 + ly, i = ly * LW + lx, t = get(tx, ty);
+    opq[i] = solidT(t) ? 1 : 0;
+    if (tx >= 0 && tx < WW && ty < s.top[tx]) lightA[i] = sky;
+    if (t === TORCH) { lightA[i] = Math.max(lightA[i], tune.torchLight); warmA[i] = tune.torchLight; }
+  }
+  const lx = Math.floor((p.x + p.w / 2) / T) - x0, ly = Math.floor((p.y + 4) / T) - y0;
+  if (lx >= 0 && ly >= 0 && lx < LW && ly < LH) { const i = ly * LW + lx; lightA[i] = Math.max(lightA[i], tune.playerLight); warmA[i] = Math.max(warmA[i], tune.playerLight); }
+  spread(lightA); spread(warmA);
+}
+
+// ---- Drawing --------------------------------------------------------------------------------------
+const mix = (a, b, k) => a.map((v, i) => Math.round(v + (b[i] - v) * k));
+const rgb = c => `rgb(${c[0]},${c[1]},${c[2]})`;
+const SKY = { dayTop: [111, 183, 230], dayBot: [191, 227, 242], duskTop: [59, 58, 110], duskBot: [242, 166, 90], nightTop: [7, 10, 28], nightBot: [20, 26, 58] };
+function drawSky(f, time) {
+  const turn = 1 - Math.abs(2 * f - 1); // strongest halfway through dusk and dawn
+  const top = mix(mix(SKY.nightTop, SKY.dayTop, f), SKY.duskTop, turn * 0.8), bot = mix(mix(SKY.nightBot, SKY.dayBot, f), SKY.duskBot, turn * 0.9);
+  for (let i = 0; i < 9; i++) { ctx.fillStyle = rgb(mix(top, bot, i / 8)); ctx.fillRect(0, i * 40, W, 40); }
+  if (f < 0.6) for (let i = 0; i < 70; i++) {
+    if (hsh(i, Math.floor(time * 2), 40) < 0.12) continue; // a twinkle
+    ctx.fillStyle = `rgba(230,236,255,${(0.6 - f) * 1.5})`;
+    ctx.fillRect(Math.floor(hsh(i, 1, 41) * W), Math.floor(hsh(i, 2, 42) * H * 0.7), 1, 1);
+  }
+  const tc = time % cycle(), dayAll = tune.dayLength + tune.duskLength;
+  if (tc < dayAll) { const k = tc / dayAll; sprite(SPR.sun, 60 + k * (W - 120), 150 - Math.sin(Math.min(1, 0.25 + k * 0.75) * Math.PI) * 120, false); }
+  else { const k = (tc - dayAll) / tune.nightLength; sprite(SPR.moon, 60 + k * (W - 120), 150 - Math.sin(k * Math.PI) * 110, false); }
+  const cx = state.cam.x;
+  [[0.15, 60, '#5d8f8a', '#141d38'], [0.3, 30, '#4a7a5e', '#0f162c']].forEach(([par, lift, day, night], j) => {
+    ctx.fillStyle = rgb(mix(hex(night), hex(day), f));
+    for (let x = 0; x < W; x += 4) {
+      const wx = x + cx * par, h = 50 + lift + Math.sin(wx * 0.011 + j * 2) * 26 + Math.sin(wx * 0.031 + j) * 10;
+      ctx.fillRect(x, Math.round(H - 40 - h - state.cam.y * par * 0.3), 4, H);
+    }
+  });
+}
+const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const DARK = Array.from({ length: 16 }, (_, l) => `rgba(6,8,22,${(1 - l / 15).toFixed(3)})`);
+function drawWorld() {
+  const s = state, p = s.p, cx = Math.round(s.cam.x), cy = Math.round(s.cam.y);
+  const f = daylight(s.time);
+  drawSky(f, s.time);
+  const tx0 = Math.floor(cx / T), ty0 = Math.floor(cy / T), tx1 = tx0 + Math.ceil(W / T), ty1 = ty0 + Math.ceil(H / T);
+  const flame = Math.floor(s.time * 6) % 2;
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+    if (tx < 0 || tx >= WW || ty < 0 || ty >= WH) continue;
+    const t = s.world[idx(tx, ty)], X = tx * T - cx, Y = ty * T - cy;
+    if (!solidT(t) && ty > s.surf[tx]) ctx.drawImage(ty < s.surf[tx] + 8 ? BG_DIRT : ty < 52 ? BG_STONE : BG_DEEP, X, Y);
+    if (t !== AIR) ctx.drawImage(t === TORCH ? TORCH_TEX[flame] : TEX[t], X, Y);
+    const d = s.dmg.get(idx(tx, ty));
+    if (d) ctx.drawImage(CRACKS[Math.min(2, Math.floor(d * 3))], X, Y);
+  }
+  for (const po of s.pouches) sprite(SPR.pouch, po.x - 5 - cx, po.y - 4 - cy + Math.sin(s.time * 3) * 1.5, false);
+  for (const it of s.items) { ctx.drawImage(TEX[{ dirt: DIRT, stone: STONE, wood: TRUNK, copper: COPPER, iron: IRON, plank: PLANK, door: DOOR, torch: TORCH }[it.id]], 4, 4, 8, 8, Math.round(it.x - 3 - cx), Math.round(it.y - 3 - cy), 6, 6); }
+  for (const m of s.monsters) {
+    if (m.hurt > 0 && Math.floor(s.time * 30) % 2) continue;
+    const fr = m.kind === 'flyer' ? Math.floor(m.anim * 8) % 2 : m.kind === 'leaper' ? (m.onGround ? 0 : 1) : Math.floor(m.anim * 6) % 2;
+    m.frame = fr;
+    sprite(SPR[m.kind][fr], m.x + m.w / 2 - SPR[m.kind][fr].width / 2 - cx, m.y + m.h - SPR[m.kind][fr].height + 1 - cy, m.dir < 0);
+  }
+  if (!(p.safe > 0 && Math.floor(s.time * 20) % 2)) drawYou(p.x - cx, p.y - cy);
+  for (const q of s.parts) { ctx.fillStyle = q.col; ctx.fillRect(Math.round(q.x - cx), Math.round(q.y - cy), 2, 2); }
+
+  // the dark, and the warm pools torches cut out of it
+  const x0 = tx0 - LM, y0 = ty0 - LM;
+  computeLight(x0, y0, Math.round(tune.nightLight + (15 - tune.nightLight) * f));
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+    if (tx < 0 || tx >= WW || ty < 0 || ty >= WH) continue;
+    const t = s.world[idx(tx, ty)], i = (ty - y0) * LW + (tx - x0), X = tx * T - cx, Y = ty * T - cy;
+    if (t === AIR && ty <= s.surf[tx] && ty < s.top[tx]) { // open sky: the sky's own colour is its light
+      if (warmA[i] > 4 && f < 0.7) { ctx.fillStyle = `rgba(255,170,80,${((warmA[i] - 4) * 0.014 * (1 - f)).toFixed(3)})`; ctx.fillRect(X, Y, T, T); }
+      continue;
+    }
+    const l = Math.min(15, lightA[i]);
+    if (l < 15) {
+      if (SIL[t] && ty <= s.surf[tx] && ty < s.top[tx]) { ctx.globalAlpha = 1 - l / 15; ctx.drawImage(SIL[t], X, Y); ctx.globalAlpha = 1; }
+      else { ctx.fillStyle = DARK[l]; ctx.fillRect(X, Y, T, T); }
+    }
+    if (warmA[i] > 2 && warmA[i] >= l - 1) { ctx.fillStyle = `rgba(255,150,60,${(warmA[i] * 0.011).toFixed(3)})`; ctx.fillRect(X, Y, T, T); }
+  }
+  // eyes show through the dark
+  for (const m of s.monsters) {
+    const sp = SPR[m.kind][m.frame || 0], ox = Math.round(m.x + m.w / 2 - sp.width / 2 - cx), oy = Math.round(m.y + m.h - sp.height + 1 - cy);
+    ctx.fillStyle = '#d8ff5a';
+    for (const [ex, ey] of KIND[m.kind].eyes[m.frame || 0]) ctx.fillRect(ox + (m.dir < 0 ? sp.width - 2 - ex : ex + 1), oy + ey + 1, 1, 1);
+  }
+  // ore glints before the digger reaches it
+  const ptx = Math.floor((p.x + 5) / T), pty = Math.floor((p.y + 7) / T), gr = tune.glintRange;
+  for (let ty = Math.max(ty0, pty - gr); ty <= Math.min(ty1, pty + gr); ty++) for (let tx = Math.max(tx0, ptx - gr); tx <= Math.min(tx1, ptx + gr); tx++) {
+    const t = get(tx, ty);
+    if (t !== COPPER && t !== IRON) continue;
+    const beat = Math.floor(s.time * 4 + hsh(tx, ty, 50) * 7) % 7;
+    if (beat > 1) continue;
+    const X = tx * T - cx + 3 + Math.floor(hsh(tx, ty, 51) * 9), Y = ty * T - cy + 3 + Math.floor(hsh(tx, ty, 52) * 9);
+    ctx.fillStyle = t === COPPER ? '#ffc98a' : '#f4f8fc';
+    ctx.fillRect(X, Y - 1 - beat, 1, 3 + beat * 2); ctx.fillRect(X - 1 - beat, Y, 3 + beat * 2, 1);
+  }
+  for (const f2 of s.floats) {
+    ctx.font = `bold 10px ${FONT}`; const w = ctx.measureText(f2.s).width + 8;
+    const fx = Math.max(w / 2 + 2, Math.min(W - w / 2 - 2, f2.x - cx)), fy = Math.max(60, f2.y - cy);
+    panel(Math.round(fx - w / 2), Math.round(fy - 7), Math.round(w), 14, 0.8); text(f2.s, fx, fy, 10, f2.col);
+  }
+}
+function drawYou(x, y) {
+  const s = state, p = s.p, fr = p.onGround && p.walk > 0 ? Math.floor(p.walk) % 2 : (p.onGround ? 0 : 1), sp = SPR.you[fr];
+  sprite(sp, x + p.w / 2 - sp.width / 2, y + p.h - sp.height + 1, p.dir < 0);
+  const tool = SLOTS[s.sel].id === 'sword' ? SPR.sword[s.sword] : SPR.pick[s.pick], sw = p.swing > 0 ? 4 : 0;
+  sprite(tool, x + p.w / 2 + (p.dir > 0 ? 2 : -2 - tool.width), y - 3 + sw, p.dir < 0);
+}
+const ICON = { pick: s => SPR.pick[s.pick], sword: s => SPR.sword[s.sword] };
+function hint() {
+  const s = state, n = Math.floor(s.time / cycle());
+  if (s.phase === 'night') return `Night ${n + 1} of ${tune.nightsToWin}: hold out until dawn`;
+  if (s.phase === 'dusk') return 'Dusk. Get home and wall yourself in';
+  if (n > 0 && s.time % cycle() < 12) return 'Dawn. Repair, craft, dig deeper';
+  return ['Hold left mouse on the ground to dig', 'Dig a tree trunk for wood', 'Press E to craft torches and walls',
+    'Keys 1-7 pick a slot. Right mouse places a block', 'Ore glints below. Dig down and light the dark', ''][s.tut];
+}
+function drawHud() {
+  const s = state, p = s.p, n = Math.floor(s.time / cycle());
+  // health
+  panel(6, 6, 74, 16);
+  for (let i = 0; i < 5; i++) {
+    const v = Math.max(0, Math.min(1, (p.hp - i * tune.playerHp / 5) / (tune.playerHp / 5)));
+    ctx.drawImage(SPR.heart[1], 9 + i * 14, 9);
+    if (v > 0) { const w = Math.ceil(11 * v); ctx.drawImage(SPR.heart[0], 0, 0, w, 10, 9 + i * 14, 9, w, 10); }
+  }
+  // the day's clock
+  const tc = s.time % cycle(), dayAll = tune.dayLength + tune.duskLength, night = tc >= dayAll;
+  const k = night ? (tc - dayAll) / tune.nightLength : tc / dayAll;
+  panel(W / 2 - 80, 6, 160, 16);
+  sprite(night ? SPR.moon : SPR.sun, W / 2 - 76, 9, false);
+  text(night ? `Night ${n + 1} of ${tune.nightsToWin}` : s.phase === 'dusk' ? 'Dusk' : `Day ${n + 1}`, W / 2 - 62, 14, 10, '#fff', 'left');
+  ctx.fillStyle = '#2a2740'; ctx.fillRect(W / 2 + 26, 12, 48, 4);
+  ctx.fillStyle = night ? '#9fb4ff' : s.phase === 'dusk' ? '#f2a65a' : '#f2c94c'; ctx.fillRect(W / 2 + 26, 12, Math.round(48 * k), 4);
+  panel(W - 86, 6, 80, 16); text('E craft  P pause', W - 46, 14, 8, '#d8d4e8');
+  const h = hint();
+  if (h) { ctx.font = `bold 10px ${FONT}`; const w = ctx.measureText(h).width + 12; panel(Math.round(W / 2 - w / 2), 28, Math.round(w), 16); text(h, W / 2, 36, 10, s.phase === 'day' ? '#fff4b0' : '#ffb4a8'); }
+  // hotbar
+  const bx = W / 2 - SLOTS.length * 15, by = H - 36;
+  SLOTS.forEach((sl, i) => {
+    const x = bx + i * 30, has = sl.tile ? s.inv[sl.id] > 0 : sl.id === 'pick' || s.sword > 0;
+    panel(x, by, 28, 30, 0.8);
+    if (i === s.sel) { ctx.strokeStyle = '#fff4b0'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, by + 0.5, 27, 29); }
+    ctx.globalAlpha = has ? 1 : 0.35;
+    const ic = sl.tile ? TEX[sl.tile] : ICON[sl.id](s);
+    ctx.drawImage(ic, x + 14 - (ic.width >> 1), by + 11 - (ic.height >> 1) + 3);
+    ctx.globalAlpha = 1;
+    text(String(i + 1), x + 3, by + 5, 8, '#b9b4cf', 'left');
+    if (sl.tile) text(String(s.inv[sl.id]), x + 26, by + 25, 8, '#fff', 'right');
+  });
+  panel(bx, by - 13, SLOTS.length * 30 - 2, 12, 0.6);
+  text(`${SLOTS[s.sel].name}   wood ${s.inv.wood}  copper ${s.inv.copper}  iron ${s.inv.iron}`, W / 2 - 1, by - 7, 8, '#e8e4f4');
+  // the block under the cursor: what a click would do
+  if (mouse.seen && scene === 'play' && !(s.craft && mouse.x < CRAFT.x + CRAFT.w && mouse.y > CRAFT.y)) {
+    const cur = cursorTile(), X = cur.tx * T - Math.round(s.cam.x), Y = cur.ty * T - Math.round(s.cam.y), sl = SLOTS[s.sel];
+    if (sl.tile && s.inv[sl.id] > 0 && (get(cur.tx, cur.ty) === AIR || get(cur.tx, cur.ty) === LEAF)) {
+      const ok = canPlace(cur.tx, cur.ty, sl.tile);
+      ctx.globalAlpha = 0.55; ctx.drawImage(TEX[sl.tile], X, Y); ctx.globalAlpha = 1;
+      ctx.strokeStyle = ok ? '#8cf07a' : '#ff6b6b'; ctx.strokeRect(X + 0.5, Y + 0.5, T - 1, T - 1);
+    } else if (get(cur.tx, cur.ty) !== AIR) {
+      ctx.strokeStyle = inReach(cur.tx, cur.ty) ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.25)'; ctx.strokeRect(X + 0.5, Y + 0.5, T - 1, T - 1);
+    }
+  }
+  if (s.craft) drawCraft();
+}
+function drawCraft() {
+  const s = state, c = CRAFT;
+  panel(c.x, c.y, c.w, 20 + RECIPES.length * c.row, 0.88);
+  text('Craft: click, or press its number. E closes', c.x + 6, c.y + 10, 8, '#fff4b0', 'left');
+  RECIPES.forEach((r, i) => {
+    const y = c.y + 18 + i * c.row, ok = canCraft(r), owned = r.owned && r.owned(s), cost = r.cost();
+    if (ok) { ctx.fillStyle = 'rgba(140,240,122,0.12)'; ctx.fillRect(c.x + 2, y, c.w - 4, c.row - 2); }
+    text(`${i + 1} ${r.name}${r.yield ? ' x' + r.yield() : ''}`, c.x + 6, y + 7, 10, owned ? '#8a86a0' : ok ? '#ffffff' : '#a9a4c0', 'left');
+    const need = Object.keys(cost).map(k => `${k} ${Math.min(s.inv[k], cost[k])}/${cost[k]}`).join('  ');
+    const lack = Object.keys(cost).find(k => s.inv[k] < cost[k]);
+    text(owned ? 'you have it' : ok ? need : `${need}  (${lack}: ${WHERE[lack]})`, c.x + 14, y + 18, 8, owned ? '#8a86a0' : ok ? '#8cf07a' : '#c9a8a0', 'left');
+  });
+}
+function banner(title, lines) {
+  ctx.fillStyle = 'rgba(8,8,20,0.78)'; ctx.fillRect(0, 0, W, H);
+  text(title, W / 2, 84, 32, '#fff4b0');
+  lines.forEach((l, i) => text(l, W / 2, 140 + i * 22, 10, i === lines.length - 1 ? '#ffffff' : '#d8d4e8'));
+}
+
+// ---- Scenes ------------------------------------------------------------------------------------------
+const scenes = {
+  figures: { // every figure side by side, for the outline check (?scene=figures)
+    update(dt) { state.t += dt; },
+    draw() {
+      clear('#1b1830');
+      const list = [['Digger (you)', SPR.you[0]], ['Gnawer', SPR.gnawer[0]], ['Leaper', SPR.leaper[0]], ['Duskwing', SPR.flyer[0]]];
+      list.forEach(([name, sp], i) => {
+        const cx = 80 + i * 160, k = 5;
+        ctx.fillStyle = '#2b2748'; ctx.fillRect(cx - 62, 70, 124, 200);
+        ctx.drawImage(sp, Math.round(cx - sp.width * k / 2), Math.round(210 - sp.height * k), sp.width * k, sp.height * k);
+        text(name, cx, 250, 12, '#fff');
+      });
+      text('Nightfall Hollow: the digger and the three things that come at night', W / 2, 36, 12, '#fff4b0');
+    },
+  },
+  title: {
+    update(dt) {
+      state.t += dt;
+      if (pressed('Enter') || pressed('Space') || mouse.click) { mouse.click = false; mouse.l = false; scene = 'play'; }
+    },
+    draw() {
+      drawWorld();
+      banner(TITLE, ['Dig by day. Craft what you find. Hold your shelter through three nights.', ...CONTROLS, 'Enter or click to start']);
+    },
+  },
+  play: {
+    update(dt) {
+      if (pressed('KeyP') || pressed('Escape')) { scene = 'pause'; return; }
+      play(dt);
+    },
+    draw() { drawWorld(); drawHud(); },
+  },
+  pause: {
+    update() {
+      mouse.click = false;
+      if (pressed('KeyP') || pressed('Escape')) scene = 'play';
+      if (pressed('KeyR')) { reset(); scene = 'play'; }
+    },
+    draw() { drawWorld(); banner('Paused', ['P: back to the hollow', 'R: leave this world and start a fresh one', 'M: mute']); },
+  },
+  results: {
+    update() { mouse.click = false; if (pressed('Enter')) { reset(); scene = 'play'; } },
+    draw() {
+      const s = state;
+      drawWorld();
+      banner('Dawn', [s.gained, `${s.dug} blocks dug  -  ${s.killed} monsters felled  -  woke at the bed ${s.deaths} time${s.deaths === 1 ? '' : 's'}`, 'Enter: a fresh world nobody has seen']);
+    },
+  },
+};
+
+// ---- Loop: fixed step, frame time clamped ---------------------------------------------
+function step() {
+  if (pressed('KeyM')) { setMuted(!muted); hit.delete('KeyM'); }
+  scenes[scene].update(STEP); hit.clear();
+}
+let last, acc = 0, ALPHA = 1; // ALPHA: how far the frame is between the last two steps
+function tick() {
+  const now = clock.now();
+  acc += Math.min(now - last, 0.25); last = now; // a stall never fast-forwards the game
+  while (acc >= STEP) { step(); acc -= STEP; }
+  ALPHA = acc / STEP;
+  drawFrame();
+}
+function drawFrame() { scenes[scene].draw(); }
+function frame() { tick(); requestAnimationFrame(frame); }
+// A headless browser on a time budget runs timers but almost no animation frames: a timer
+// ticks when no frame has come for 100 ms on a visible page; a hidden tab stays paused.
+function timer() { if (document.visibilityState === 'visible' && clock.now() - last > 0.1) tick(); }
+
+// ---- What a check can read and drive (?manual=1 stops the loop; players never see it) ----
+window.game = {
+  get scene() { return scene; },
+  get state() { return state; },
+  press(code) { hit.add(code); },
+  hold(code, on) { on ? down.add(code) : down.delete(code); },
+  get events() { return events; }, // the loop steps; a check empties it
+  step(n = 1, draw = true, alpha = 1) {
+    for (let i = 0; i < n; i++) step();
+    if (draw) { ALPHA = alpha; drawFrame(); }
+  },
+};
+
+reset();
+scene = params.get('scene') || 'title';
+last = clock.now();
+if (params.get('manual') === '1') drawFrame();
+else { requestAnimationFrame(frame); setInterval(timer, 50); }
+</script>
+</body>
+</html>

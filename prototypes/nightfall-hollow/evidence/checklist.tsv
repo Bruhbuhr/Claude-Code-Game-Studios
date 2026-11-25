@@ -1,0 +1,28 @@
+L1	pass	evidence/play.png	16 px tiles, drawn digger, earth and moss palette and the dark below ground in play.png; violet outlined monsters in figures.png; torch pools are index.html:769, not in a shot
+L2	pass	evidence/play.png	side-view dig and build loop, own art and names
+L3	pass	evidence/play.png	2D side view centred on the digger
+F1	pass	index.html:325	genWorld: surface, dirt, stone, caves, ore, trees from the seed; grass, dirt and trees in play.png
+F2	pass	index.html:499	crack steps drawn from dmg; deep rock and iron need tier 1 and say 'Needs a copper pickaxe'
+F3	pass	index.html:858	glint within glintRange through the dark; pickups home on the digger at index.html:715 (wood 4 in play.png)
+F4	pass	index.html:938	drawCraft: makeable rows lit, the rest show have/need and where to find it; not in a shot
+F5	pass	index.html:925	ghost tile with a green or red frame; placeAt for wall, door and torch
+F6	pass	index.html:432	daylight drives the sky and light level; torches light at index.html:769; day in play.png, dusk and night not in a shot
+F7	pass	evidence/figures.png	gnawer chews, leaper jumps, duskwing flies (index.html:573); three outlines in figures.png
+S1	pass	index.html:325	worms carve caves; digAt breaks blocks
+S2	pass	index.html:539	copper pickaxe and three swords craft from wood and ore
+S3	pass	index.html:552	spawns each night, contact damage, sword and pickaxe hits; a night was not played
+S4	pass	index.html:519	stand-in: walls, doors and torches placed by hand; gnawers chew them by material
+S5	pass	index.html:393	stand-in: reset makes a new seed and world after a win or R on pause
+M1	pass	evidence/play.png	on grass by the bed with the pickaxe drawn; the sun is high at the start, not low
+M2	pass	index.html:499	cracks in three steps, bits spray, drop flies in
+M3	pass	evidence/play.png	felled tree gave wood 4 and the hint moved to 'Press E to craft'; craft list at index.html:938
+M4	pass	index.html:374	copper placed 6 tiles under the bed side and a cave at index.html:365; dark until lit
+M5	pass	index.html:787	sky turns through dusk colours from 105 s
+M6	not_assessed	-	timing of the first monster against the player's wall needs a played night
+M7	not_assessed	-	a mark on the paragraph, not a line to build
+C1	pass	config.js:46	dayLength 105 + duskLength 15 = night at 120 s
+C2	not_assessed	-	whether a basic shelter survives night 1 needs a played night
+C3	pass	config.js:66	chewDirt 2 s, chewWood 5 s, chewStone 9 s; gnawer chews at index.html:565
+C4	pass	index.html:745	pouch left where you fell, wake at the bed
+C5	pass	index.html:554	kinds added on nights 2 and 3; cap and spawn rate rise at index.html:700
+C6	not_assessed	-	a mark on the paragraph, not a line to build

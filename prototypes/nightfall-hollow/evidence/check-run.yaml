@@ -1,0 +1,155 @@
+# The one-shot's small check (check-run/1).
+# Written by one-shot-check.sh --record: the results are /prototype's reading of
+# evidence/self-check.tsv; never edited by hand.
+kind: check-run/1
+engine: web
+browser: "HeadlessChrome/158.0.0.0"
+time: "2026-11-25 11:14:50"
+checks:
+  - id: boots
+    result: pass
+    evidence:
+      - "evidence/self-check.tsv"
+  - id: shot
+    result: pass
+    evidence:
+      - "evidence/play.png"
+  - id: outlines
+    result: pass
+    evidence:
+      - "evidence/figures.png"
+  - id: brief-words
+    result: pass
+    evidence:
+      - "evidence/brief-words.tsv"
+  - id: emoji
+    result: pass
+    evidence:
+      - "evidence/self-check.tsv"
+  - id: nearest-game
+    result: pass
+    evidence:
+      - "evidence/nearest-game.txt"
+brief_checklist:
+  - id: L1
+    result: pass
+    evidence: "evidence/play.png"
+    item: "Look: modern 16-bit pixel *(provisional)*. Mood: a warm surface by day and a cold blue night. Scale: 16-pixel tiles at whole-number scale, with a camera that never moves in sub-pixels. Shapes: blocky world, a small rounded digger, sharp angular monsters. Palette: earth browns and moss green for the ground, cool grey stone, the player in warm orange, threats in sickly violet with bright eyes, ore as the glinting accent; shadows cooler, lights warmer. Rules: one pixel density, a dark one-pixel outline on figures only, flat shading with one highlight step. Signature: darkness that swallows the caves, with torchlight carving warm pools out of it. Every figure drawn, no emoji, no plain circles."
+  - id: L2
+    result: pass
+    evidence: "evidence/play.png"
+    item: "References: Terraria (the side-view dig, build and night loop; not its art, names or characters)."
+  - id: L3
+    result: pass
+    evidence: "evidence/play.png"
+    item: "View: 2D · Camera: side view that follows the digger."
+  - id: F1
+    result: pass
+    evidence: "index.html:325"
+    item: "A side-view world generated from a seed each run: surface, dirt, stone, caves, ore, trees"
+  - id: F2
+    result: pass
+    evidence: "index.html:499"
+    item: "Digging that cracks blocks in steps, with harder rock deeper and rock that says what tool it needs"
+  - id: F3
+    result: pass
+    evidence: "index.html:858"
+    item: "Ore that glints before you reach it, and pickups that fly to you"
+  - id: F4
+    result: pass
+    evidence: "index.html:938"
+    item: "A craft list that shows what you can make now and what greyed recipes are missing"
+  - id: F5
+    result: pass
+    evidence: "index.html:925"
+    item: "Block placing on a grid with a ghost preview, for walls, doors and torches"
+  - id: F6
+    result: pass
+    evidence: "index.html:432"
+    item: "A day and night cycle with felt dusk, darkness and torchlight"
+  - id: F7
+    result: pass
+    evidence: "evidence/figures.png"
+    item: "3 night monster kinds, each attacking differently (a walker that chews walls, a leaper, a flyer)"
+  - id: S1
+    result: pass
+    evidence: "index.html:325"
+    item: "dig procedural caves · in the slice"
+  - id: S2
+    result: pass
+    evidence: "index.html:539"
+    item: "craft tools · in the slice"
+  - id: S3
+    result: pass
+    evidence: "index.html:552"
+    item: "survive monsters at night · in the slice"
+  - id: S4
+    result: pass
+    evidence: "index.html:519"
+    item: "build a settlement that defends itself · thin stand-in *(guessed)*"
+  - id: S5
+    result: pass
+    evidence: "index.html:393"
+    item: "descend into a fresh procedural world each run · thin stand-in *(guessed)*"
+  - id: M1
+    result: pass
+    evidence: "evidence/play.png"
+    item: "You stand on grass under a low sun with a pickaxe in hand."
+  - id: M2
+    result: pass
+    evidence: "index.html:499"
+    item: "Holding the mouse on dirt cracks it in steps and the bits fly to you."
+  - id: M3
+    result: pass
+    evidence: "evidence/play.png"
+    item: "A tree gives wood and the crafting list lights up with a torch and wood walls, while greyed recipes say what they still need."
+  - id: M4
+    result: pass
+    evidence: "index.html:374"
+    item: "An ore glint a few tiles down pulls you into the first cave, where it gets dark until you place a torch."
+  - id: M5
+    result: pass
+    evidence: "index.html:787"
+    item: "Then the sky starts to turn."
+  - id: M6
+    result: not_run
+    mark: not assessed
+    why: "timing of the first monster against the player's wall needs a played night"
+    item: "You climb out and wall yourself in as the first monster reaches the door."
+  - id: M7
+    result: not_run
+    mark: not assessed
+    why: "a mark on the paragraph, not a line to build"
+    item: "*(guessed)*"
+  - id: C1
+    result: pass
+    evidence: "config.js:46"
+    item: "The first night comes about two minutes in."
+  - id: C2
+    result: not_run
+    mark: not assessed
+    why: "whether a basic shelter survives night 1 needs a played night"
+    item: "A basic walled shelter with a torch survives it."
+  - id: C3
+    result: pass
+    evidence: "config.js:66"
+    item: "Monsters walk at you and chew through weak walls, so dirt holds briefly and stone holds longer."
+  - id: C4
+    result: pass
+    evidence: "index.html:745"
+    item: "Dying drops what you carried where you fell and you wake at your bed."
+  - id: C5
+    result: pass
+    evidence: "index.html:554"
+    item: "Each night brings more monsters and a new kind."
+  - id: C6
+    result: not_run
+    mark: not assessed
+    why: "a mark on the paragraph, not a line to build"
+    item: "*(provisional)*"
+measures:
+  - id: step-time
+    value: 3.200
+    unit: ms
+    by: browser
+    detail: "mean 0.020 ms, slowest 3.200 ms, 293 steps"
