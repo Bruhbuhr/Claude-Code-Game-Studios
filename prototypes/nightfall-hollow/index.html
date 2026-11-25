@@ -24,13 +24,12 @@ const tune = new Proxy({}, { get: (_, k) => CONFIG[k].value }); // live: tune.sp
 const STEP = 1 / 60;            // simulation step in seconds; motion is per second, never per frame
 const W = 640, H = 360;         // logical size: 16 px tiles at whole-number scale
 const PIXEL = true;             // pixel look: whole-number scale, no smoothing
-const FONT = '"Courier New", monospace';
+const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'; // drawn at the screen's own pixels, so it stays sharp
 const TITLE = 'Nightfall Hollow';
-const CONTROLS = [
-  'A/D or arrows: move  -  Space: jump',
-  'Hold left mouse: dig or attack  -  Right mouse: place',
-  '1-7: pick a slot  -  E: craft  -  P: pause  -  M: mute',
-  'No mouse: F digs ahead, G places ahead (hold S for below)',
+const CONTROLS = [ // shown on the title screen: the key, then what it does
+  ['A / D or arrows', 'Move'], ['Space', 'Jump'], ['Hold left mouse', 'Dig, or attack a monster'],
+  ['Right mouse', 'Place the selected block'], ['1 - 7 or wheel', 'Pick a hotbar slot'], ['E', 'Open the craft list'],
+  ['P  /  M', 'Pause  /  mute'], ['F  /  G', 'No mouse: dig / place ahead (hold S for below)'],
 ];
 const clock = window.GAME_CLOCK || { now: () => performance.now() / 1000 }; // a check may inject one
 let seed;
@@ -48,7 +47,7 @@ const ctx = canvas.getContext('2d');
 function fit() { // fills the window at any size and pixel ratio
   const k = Math.min(innerWidth / W, innerHeight / H);
   const s = PIXEL ? Math.max(1, Math.floor(k)) : k;
-  const r = PIXEL ? 1 : s * (devicePixelRatio || 1);
+  const r = PIXEL ? Math.max(1, Math.round(s * (devicePixelRatio || 1))) : s * (devicePixelRatio || 1); // whole-number, so tiles never seam
   canvas.width = Math.round(W * r); canvas.height = Math.round(H * r);
   canvas.style.width = Math.round(W * s) + 'px'; canvas.style.height = Math.round(H * s) + 'px';
   canvas.style.marginTop = Math.max(0, Math.floor((innerHeight - H * s) / 2)) + 'px';
@@ -58,10 +57,14 @@ function fit() { // fills the window at any size and pixel ratio
 addEventListener('resize', fit); fit();
 function clear(c) { ctx.fillStyle = c; ctx.fillRect(0, 0, W, H); }
 function text(s, x, y, size, c, align = 'center') {
-  ctx.fillStyle = c; ctx.font = `bold ${size}px ${FONT}`; ctx.textAlign = align;
+  ctx.fillStyle = c; ctx.font = `600 ${size}px ${FONT}`; ctx.textAlign = align;
   ctx.textBaseline = 'middle'; ctx.fillText(s, Math.round(x), Math.round(y));
 }
-function panel(x, y, w, h, a = 0.72) { ctx.fillStyle = `rgba(12,10,22,${a})`; ctx.fillRect(x, y, w, h); }
+function panel(x, y, w, h, a = 0.86, edge = 'rgba(255,255,255,0.16)') {
+  ctx.fillStyle = `rgba(16,14,30,${a})`; ctx.fillRect(x, y, w, h);
+  if (edge) { ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1); }
+}
+const textW = (s, size) => { ctx.font = `600 ${size}px ${FONT}`; return ctx.measureText(s).width; };
 
 // ---- Input: keys by position (event.code), OS key repeat ignored ------------------------
 const down = new Set(), hit = new Set();
@@ -472,7 +475,11 @@ const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h 
 function spray(x, y, col, n, speed = 70) {
   for (let i = 0; i < n; i++) state.parts.push({ x, y, vx: (rng() - 0.5) * speed * 2, vy: -rng() * speed - 20, life: 0.3 + rng() * 0.4, col });
 }
-function say(x, y, s, col = '#fff4b0') { state.floats.push({ x, y, s, col, life: 1.6 }); }
+function say(x, y, s, col = '#fff4b0') { // a message: shown above the hotbar, the same one never twice at once
+  const f = state.floats, old = f.find(m => m.s === s);
+  if (old) { old.life = 3.2; return; }
+  f.push({ s, col, life: 3.2 }); if (f.length > 3) f.shift();
+}
 const CHIME = { dirt: 330, stone: 392, wood: 440, copper: 660, iron: 784, plank: 494, door: 494, torch: 523 };
 
 // ---- Digging, placing, crafting -----------------------------------------------------------------
@@ -546,7 +553,7 @@ function craft(i) {
   events.push({ type: 'craft', item: r.name });
   if (s.tut < 3) s.tut = 3;
 }
-const CRAFT = { x: 8, y: 58, w: 320, row: 26 };
+const CRAFT = { x: 8, y: 50, w: 372, row: 31, head: 26 };
 
 // ---- Monsters ---------------------------------------------------------------------------------
 // Which monsters a night draws from. One is picked at random per spawn, so a kind listed twice
@@ -664,7 +671,7 @@ function play(dt) {
   for (let i = 0; i < 7; i++) if (pressed('Digit' + (i + 1))) { if (s.craft) craft(i); else s.sel = i; }
   let clickedCraft = false;
   if (mouse.click && s.craft && mouse.x >= CRAFT.x && mouse.x < CRAFT.x + CRAFT.w) {
-    const i = Math.floor((mouse.y - CRAFT.y - 18) / CRAFT.row);
+    const i = Math.floor((mouse.y - CRAFT.y - CRAFT.head) / CRAFT.row);
     if (i >= 0 && i < RECIPES.length) { craft(i); clickedCraft = true; mouse.l = false; }
   }
   mouse.click = false;
@@ -736,7 +743,7 @@ function play(dt) {
   s.pouches = s.pouches.filter(po => !po.got);
   for (const q of s.parts) { q.life -= dt; q.vy += 500 * dt; q.x += q.vx * dt; q.y += q.vy * dt; }
   s.parts = s.parts.filter(q => q.life > 0);
-  for (const f of s.floats) { f.life -= dt; f.y -= 14 * dt; }
+  for (const f of s.floats) f.life -= dt;
   s.floats = s.floats.filter(f => f.life > 0);
 
   // torchlight mends
@@ -870,11 +877,6 @@ function drawWorld() {
     ctx.fillStyle = t === COPPER ? '#ffc98a' : '#f4f8fc';
     ctx.fillRect(X, Y - 1 - beat, 1, 3 + beat * 2); ctx.fillRect(X - 1 - beat, Y, 3 + beat * 2, 1);
   }
-  for (const f2 of s.floats) {
-    ctx.font = `bold 10px ${FONT}`; const w = ctx.measureText(f2.s).width + 8;
-    const fx = Math.max(w / 2 + 2, Math.min(W - w / 2 - 2, f2.x - cx)), fy = Math.max(60, f2.y - cy);
-    panel(Math.round(fx - w / 2), Math.round(fy - 7), Math.round(w), 14, 0.8); text(f2.s, fx, fy, 10, f2.col);
-  }
 }
 function drawYou(x, y) {
   const s = state, p = s.p, fr = p.onGround && p.walk > 0 ? Math.floor(p.walk) % 2 : (p.onGround ? 0 : 1), sp = SPR.you[fr];
@@ -894,68 +896,108 @@ function hint() {
 function drawHud() {
   const s = state, p = s.p, n = Math.floor(s.time / cycle());
   // health
-  panel(6, 6, 74, 16);
+  panel(6, 6, 76, 18);
   for (let i = 0; i < 5; i++) {
     const v = Math.max(0, Math.min(1, (p.hp - i * tune.playerHp / 5) / (tune.playerHp / 5)));
-    ctx.drawImage(SPR.heart[1], 9 + i * 14, 9);
-    if (v > 0) { const w = Math.ceil(11 * v); ctx.drawImage(SPR.heart[0], 0, 0, w, 10, 9 + i * 14, 9, w, 10); }
+    ctx.drawImage(SPR.heart[1], 10 + i * 14, 10);
+    if (v > 0) { const w = Math.ceil(11 * v); ctx.drawImage(SPR.heart[0], 0, 0, w, 10, 10 + i * 14, 10, w, 10); }
   }
   // the day's clock
   const tc = s.time % cycle(), dayAll = tune.dayLength + tune.duskLength, night = tc >= dayAll;
   const k = night ? (tc - dayAll) / tune.nightLength : tc / dayAll;
-  panel(W / 2 - 80, 6, 160, 16);
-  sprite(night ? SPR.moon : SPR.sun, W / 2 - 76, 9, false);
-  text(night ? `Night ${n + 1} of ${tune.nightsToWin}` : s.phase === 'dusk' ? 'Dusk' : `Day ${n + 1}`, W / 2 - 62, 14, 10, '#fff', 'left');
-  ctx.fillStyle = '#2a2740'; ctx.fillRect(W / 2 + 26, 12, 48, 4);
-  ctx.fillStyle = night ? '#9fb4ff' : s.phase === 'dusk' ? '#f2a65a' : '#f2c94c'; ctx.fillRect(W / 2 + 26, 12, Math.round(48 * k), 4);
-  panel(W - 86, 6, 80, 16); text('E craft  P pause', W - 46, 14, 8, '#d8d4e8');
+  panel(W / 2 - 88, 6, 176, 18);
+  sprite(night ? SPR.moon : SPR.sun, W / 2 - 83, 10, false);
+  text(night ? `Night ${n + 1} of ${tune.nightsToWin}` : s.phase === 'dusk' ? 'Dusk' : `Day ${n + 1}`, W / 2 - 68, 15, 11, '#ffffff', 'left');
+  ctx.fillStyle = '#34304f'; ctx.fillRect(W / 2 + 20, 12, 62, 6);
+  ctx.fillStyle = night ? '#9fb4ff' : s.phase === 'dusk' ? '#f2a65a' : '#f2c94c'; ctx.fillRect(W / 2 + 20, 12, Math.round(62 * k), 6);
+  panel(W - 112, 6, 106, 18); text('E  craft     P  pause', W - 59, 15, 10, '#e8e4f4');
+  // what to do next: one line, always in the same place
   const h = hint();
-  if (h) { ctx.font = `bold 10px ${FONT}`; const w = ctx.measureText(h).width + 12; panel(Math.round(W / 2 - w / 2), 28, Math.round(w), 16); text(h, W / 2, 36, 10, s.phase === 'day' ? '#fff4b0' : '#ffb4a8'); }
+  if (h) {
+    const w = Math.round(textW(h, 12)) + 24, x = Math.round(W / 2 - w / 2), warn = s.phase !== 'day';
+    panel(x, 28, w, 20, 0.9, warn ? '#ff8a80' : '#f2c94c');
+    text(h, W / 2, 38, 12, warn ? '#ffd0c8' : '#fff4b0');
+  }
   // hotbar
-  const bx = W / 2 - SLOTS.length * 15, by = H - 36;
+  const SW = 34, bx = Math.round(W / 2 - SLOTS.length * SW / 2), by = H - 38;
   SLOTS.forEach((sl, i) => {
-    const x = bx + i * 30, has = sl.tile ? s.inv[sl.id] > 0 : sl.id === 'pick' || s.sword > 0;
-    panel(x, by, 28, 30, 0.8);
-    if (i === s.sel) { ctx.strokeStyle = '#fff4b0'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, by + 0.5, 27, 29); }
+    const x = bx + i * SW, has = sl.tile ? s.inv[sl.id] > 0 : sl.id === 'pick' || s.sword > 0, on = i === s.sel;
+    panel(x, by, SW - 2, 32, 0.9, on ? '#fff4b0' : 'rgba(255,255,255,0.16)');
+    if (on) { ctx.fillStyle = 'rgba(255,244,176,0.14)'; ctx.fillRect(x + 1, by + 1, SW - 4, 30); }
     ctx.globalAlpha = has ? 1 : 0.35;
     const ic = sl.tile ? TEX[sl.tile] : ICON[sl.id](s);
-    ctx.drawImage(ic, x + 14 - (ic.width >> 1), by + 11 - (ic.height >> 1) + 3);
+    ctx.drawImage(ic, x + 16 - (ic.width >> 1), by + 17 - (ic.height >> 1));
     ctx.globalAlpha = 1;
-    text(String(i + 1), x + 3, by + 5, 8, '#b9b4cf', 'left');
-    if (sl.tile) text(String(s.inv[sl.id]), x + 26, by + 25, 8, '#fff', 'right');
+    text(String(i + 1), x + 4, by + 7, 9, on ? '#fff4b0' : '#b9b4cf', 'left');
+    if (sl.tile) text(String(s.inv[sl.id]), x + SW - 5, by + 25, 10, has ? '#ffffff' : '#8a86a0', 'right');
   });
-  panel(bx, by - 13, SLOTS.length * 30 - 2, 12, 0.6);
-  text(`${SLOTS[s.sel].name}   wood ${s.inv.wood}  copper ${s.inv.copper}  iron ${s.inv.iron}`, W / 2 - 1, by - 7, 8, '#e8e4f4');
+  const bw = SLOTS.length * SW - 2;
+  panel(bx, by - 18, bw, 16, 0.9);
+  text(SLOTS[s.sel].name, bx + 6, by - 10, 10, '#fff4b0', 'left');
+  text(`wood ${s.inv.wood}    copper ${s.inv.copper}    iron ${s.inv.iron}`, bx + bw - 6, by - 10, 10, '#e8e4f4', 'right');
+  // messages: newest lowest, each fading out
+  s.floats.forEach((f, i) => {
+    const w = Math.round(textW(f.s, 12)) + 24, x = Math.round(W / 2 - w / 2), y = by - 42 - (s.floats.length - 1 - i) * 23;
+    ctx.globalAlpha = Math.min(1, f.life / 0.5);
+    panel(x, y, w, 20, 0.94, f.col); ctx.fillStyle = f.col; ctx.fillRect(x, y, 3, 20);
+    text(f.s, W / 2 + 1, y + 10, 12, '#ffffff');
+    ctx.globalAlpha = 1;
+  });
   // the block under the cursor: what a click would do
   if (mouse.seen && scene === 'play' && !(s.craft && mouse.x < CRAFT.x + CRAFT.w && mouse.y > CRAFT.y)) {
     const cur = cursorTile(), X = cur.tx * T - Math.round(s.cam.x), Y = cur.ty * T - Math.round(s.cam.y), sl = SLOTS[s.sel];
     if (sl.tile && s.inv[sl.id] > 0 && (get(cur.tx, cur.ty) === AIR || get(cur.tx, cur.ty) === LEAF)) {
       const ok = canPlace(cur.tx, cur.ty, sl.tile);
       ctx.globalAlpha = 0.55; ctx.drawImage(TEX[sl.tile], X, Y); ctx.globalAlpha = 1;
-      ctx.strokeStyle = ok ? '#8cf07a' : '#ff6b6b'; ctx.strokeRect(X + 0.5, Y + 0.5, T - 1, T - 1);
+      ctx.strokeStyle = ok ? '#8cf07a' : '#ff6b6b'; ctx.lineWidth = 1; ctx.strokeRect(X + 0.5, Y + 0.5, T - 1, T - 1);
     } else if (get(cur.tx, cur.ty) !== AIR) {
-      ctx.strokeStyle = inReach(cur.tx, cur.ty) ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.25)'; ctx.strokeRect(X + 0.5, Y + 0.5, T - 1, T - 1);
+      ctx.strokeStyle = inReach(cur.tx, cur.ty) ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(X + 0.5, Y + 0.5, T - 1, T - 1);
     }
   }
   if (s.craft) drawCraft();
 }
-function drawCraft() {
-  const s = state, c = CRAFT;
-  panel(c.x, c.y, c.w, 20 + RECIPES.length * c.row, 0.88);
-  text('Craft: click, or press its number. E closes', c.x + 6, c.y + 10, 8, '#fff4b0', 'left');
+function drawCraft() { // each recipe a row: its key, its name, what it costs in green (have) or red (missing), and a Craft button
+  const s = state, c = CRAFT, hgt = c.head + RECIPES.length * c.row + 4;
+  panel(c.x, c.y, c.w, hgt, 0.95, '#f2c94c');
+  text('Crafting', c.x + 10, c.y + 13, 13, '#fff4b0', 'left');
+  text('click a row or press its number     E closes', c.x + c.w - 10, c.y + 13, 9, '#b9b4cf', 'right');
   RECIPES.forEach((r, i) => {
-    const y = c.y + 18 + i * c.row, ok = canCraft(r), owned = r.owned && r.owned(s), cost = r.cost();
-    if (ok) { ctx.fillStyle = 'rgba(140,240,122,0.12)'; ctx.fillRect(c.x + 2, y, c.w - 4, c.row - 2); }
-    text(`${i + 1} ${r.name}${r.yield ? ' x' + r.yield() : ''}`, c.x + 6, y + 7, 10, owned ? '#8a86a0' : ok ? '#ffffff' : '#a9a4c0', 'left');
-    const need = Object.keys(cost).map(k => `${k} ${Math.min(s.inv[k], cost[k])}/${cost[k]}`).join('  ');
-    const lack = Object.keys(cost).find(k => s.inv[k] < cost[k]);
-    text(owned ? 'you have it' : ok ? need : `${need}  (${lack}: ${WHERE[lack]})`, c.x + 14, y + 18, 8, owned ? '#8a86a0' : ok ? '#8cf07a' : '#c9a8a0', 'left');
+    const y = c.y + c.head + i * c.row, ok = canCraft(r), owned = r.owned && r.owned(s), cost = r.cost();
+    const hover = mouse.seen && mouse.x >= c.x && mouse.x < c.x + c.w && mouse.y >= y && mouse.y < y + c.row;
+    ctx.fillStyle = ok ? (hover ? 'rgba(140,240,122,0.30)' : 'rgba(140,240,122,0.14)') : 'rgba(255,255,255,0.05)';
+    ctx.fillRect(c.x + 4, y, c.w - 8, c.row - 3);
+    ctx.fillStyle = ok ? '#8cf07a' : '#4a4666'; ctx.fillRect(c.x + 8, y + 4, 16, 16);
+    text(String(i + 1), c.x + 16, y + 12, 11, ok ? '#10201a' : '#d8d4e8');
+    text(`${r.name}${r.yield ? '  x' + r.yield() : ''}`, c.x + 30, y + 9, 12, owned ? '#8a86a0' : ok ? '#ffffff' : '#cfcbe0', 'left');
+    if (owned) { text('you already have it', c.x + 30, y + 21, 9, '#8a86a0', 'left'); return; }
+    let x = c.x + 30, lack = null;
+    for (const key of Object.keys(cost)) {
+      const enough = s.inv[key] >= cost[key], label = `${key} ${s.inv[key]} / ${cost[key]}`;
+      text(label, x, y + 21, 10, enough ? '#8cf07a' : '#ff8a80', 'left'); x += textW(label, 10) + 12;
+      if (!enough && !lack) lack = key;
+    }
+    if (lack) text(`find ${lack}: ${WHERE[lack]}`, x, y + 21, 9, '#b9b4cf', 'left');
+    if (ok) { ctx.fillStyle = hover ? '#b6ffa6' : '#8cf07a'; ctx.fillRect(c.x + c.w - 56, y + 5, 46, 18); text('Craft', c.x + c.w - 33, y + 14, 11, '#10201a'); }
   });
 }
 function banner(title, lines) {
-  ctx.fillStyle = 'rgba(8,8,20,0.78)'; ctx.fillRect(0, 0, W, H);
-  text(title, W / 2, 84, 32, '#fff4b0');
-  lines.forEach((l, i) => text(l, W / 2, 140 + i * 22, 10, i === lines.length - 1 ? '#ffffff' : '#d8d4e8'));
+  ctx.fillStyle = 'rgba(8,8,20,0.82)'; ctx.fillRect(0, 0, W, H);
+  text(title, W / 2, 96, 34, '#fff4b0');
+  lines.forEach((l, i) => text(l, W / 2, 150 + i * 26, 13, i === lines.length - 1 ? '#ffffff' : '#e8e4f4'));
+}
+function drawTitle() {
+  ctx.fillStyle = 'rgba(8,8,20,0.84)'; ctx.fillRect(0, 0, W, H);
+  text(TITLE, W / 2, 50, 36, '#fff4b0');
+  text('Dig by day. Craft what you find. Hold your shelter through three nights.', W / 2, 84, 13, '#ffffff');
+  const x = W / 2 - 230, y = 104, row = 22;
+  panel(x, y, 460, CONTROLS.length * row + 10, 0.9);
+  CONTROLS.forEach(([key, does], i) => {
+    const cy = y + 16 + i * row;
+    if (i % 2 === 0) { ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(x + 4, cy - 10, 452, row - 2); }
+    text(key, x + 140, cy, 12, '#fff4b0', 'right'); text(does, x + 156, cy, 12, '#ffffff', 'left');
+  });
+  const pulse = 0.65 + 0.35 * Math.sin(state.t * 4);
+  ctx.globalAlpha = pulse; text('Press Enter or click to start', W / 2, H - 46, 15, '#8cf07a'); ctx.globalAlpha = 1;
 }
 
 // ---- Scenes ------------------------------------------------------------------------------------------
@@ -981,7 +1023,7 @@ const scenes = {
     },
     draw() {
       drawWorld();
-      banner(TITLE, ['Dig by day. Craft what you find. Hold your shelter through three nights.', ...CONTROLS, 'Enter or click to start']);
+      drawTitle();
     },
   },
   play: {

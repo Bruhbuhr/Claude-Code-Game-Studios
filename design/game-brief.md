@@ -12,6 +12,7 @@
 - 6. How hard: "you pick"
 - 7. Goal: "you pick"
 - 8. Slice or quick test: "you pick"
+- After play: "improve its ui for me right now the dialog pop up r too hard to read and it is not user friednly as well"
 
 **Pitch:** Dig a fresh pixel world by day, craft what you find into tools and walls, and hold your shelter through the night. *(guessed)*
 
